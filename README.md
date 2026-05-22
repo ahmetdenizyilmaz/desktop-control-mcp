@@ -1,5 +1,7 @@
 # desktop-control-mcp
 
+![Claude Desktop Controller MCP](assets/banner.png)
+
 A Windows desktop automation server that exposes mouse, keyboard, screen capture, and AI-powered UI element detection through two interfaces:
 
 - **MCP server** (`mcp_server.py`) — stdio transport, designed for use with Claude Code, Claude Desktop, and other MCP clients

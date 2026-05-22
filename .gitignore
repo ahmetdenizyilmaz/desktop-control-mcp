@@ -21,6 +21,8 @@ test/
 *.jpeg
 !templates/*.png
 !templates/*.jpg
+!assets/*.png
+!assets/*.jpg
 
 # Local debug / scratch scripts (CDP scripts for unrelated Tauri project)
 cdp_*.py
