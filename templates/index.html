@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Desktop Control</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+
+  header { background: #16213e; padding: 16px 24px; display: flex; align-items: center; gap: 12px; border-bottom: 2px solid #0f3460; }
+  header .dot { width: 14px; height: 14px; border-radius: 50%; background: #2ecc71; }
+  header h1 { font-size: 1.2rem; font-weight: 600; }
+  #health-badge { margin-left: auto; font-size: .8rem; padding: 4px 10px; border-radius: 12px; background: #555; }
+  #health-badge.ok { background: #27ae60; }
+  #health-badge.err { background: #c0392b; }
+
+  .container { max-width: 1100px; margin: 24px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 740px) { .container { grid-template-columns: 1fr; } }
+
+  .card { background: #16213e; border-radius: 10px; padding: 20px; border: 1px solid #0f3460; }
+  .card h2 { font-size: 1rem; margin-bottom: 14px; color: #a8b2d1; text-transform: uppercase; letter-spacing: .5px; }
+
+  label { display: block; font-size: .85rem; color: #8892b0; margin-bottom: 4px; }
+  input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid #0f3460; border-radius: 6px; background: #1a1a2e; color: #eee; font-size: .9rem; margin-bottom: 10px; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: #2ecc71; }
+
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+
+  button { padding: 10px 18px; border: none; border-radius: 6px; cursor: pointer; font-size: .9rem; font-weight: 600; transition: .15s; }
+  button:active { transform: scale(.97); }
+  .btn-primary { background: #2ecc71; color: #1a1a2e; }
+  .btn-primary:hover { background: #27ae60; }
+  .btn-warn { background: #e67e22; color: #fff; }
+  .btn-warn:hover { background: #d35400; }
+  .btn-blue { background: #3498db; color: #fff; }
+  .btn-blue:hover { background: #2980b9; }
+
+  .screenshot-wrap { grid-column: 1 / -1; }
+  .screenshot-wrap img { max-width: 100%; border-radius: 8px; border: 1px solid #0f3460; margin-top: 10px; cursor: crosshair; }
+
+  #log { grid-column: 1 / -1; }
+  #log-output { background: #0a0a1a; border-radius: 6px; padding: 12px; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: .8rem; max-height: 200px; overflow-y: auto; white-space: pre-wrap; color: #8892b0; }
+
+  .coord-display { font-size: .8rem; color: #8892b0; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot"></div>
+  <h1>Desktop Control</h1>
+  <span id="health-badge">checking...</span>
+</header>
+
+<div class="container">
+
+  <!-- Screenshot -->
+  <div class="card screenshot-wrap">
+    <h2>Screenshot</h2>
+    <button class="btn-primary" onclick="takeScreenshot()">Take Screenshot</button>
+    <span class="coord-display" id="coord-display">Click on the image to get coordinates</span>
+    <img id="screenshot" style="display:none" onclick="imgClick(event)" />
+  </div>
+
+  <!-- Mouse Move -->
+  <div class="card">
+    <h2>Move Mouse</h2>
+    <div class="row">
+      <div><label>X</label><input type="number" id="move-x" placeholder="X" value="500"></div>
+      <div><label>Y</label><input type="number" id="move-y" placeholder="Y" value="500"></div>
+    </div>
+    <button class="btn-blue" onclick="moveMouse()">Move</button>
+  </div>
+
+  <!-- Mouse Click -->
+  <div class="card">
+    <h2>Click Mouse</h2>
+    <div class="row">
+      <div><label>X</label><input type="number" id="click-x" placeholder="X" value="500"></div>
+      <div><label>Y</label><input type="number" id="click-y" placeholder="Y" value="500"></div>
+    </div>
+    <label>Button</label>
+    <select id="click-btn">
+      <option value="left">Left</option>
+      <option value="right">Right</option>
+      <option value="middle">Middle</option>
+    </select>
+    <button class="btn-warn" onclick="clickMouse()">Click</button>
+  </div>
+
+  <!-- Send Keys -->
+  <div class="card">
+    <h2>Send Keys</h2>
+    <label>Keys / Text</label>
+    <input type="text" id="keys-input" placeholder="e.g. hello or ctrl+c">
+    <button class="btn-blue" onclick="sendKeys()">Send</button>
+  </div>
+
+  <!-- Bracket Command -->
+  <div class="card">
+    <h2>Bracket Command</h2>
+    <label>Command</label>
+    <input type="text" id="cmd-input" placeholder="e.g. [ClickMouse(100,200)]">
+    <button class="btn-blue" onclick="sendCommand()">Execute</button>
+  </div>
+
+  <!-- Log -->
+  <div class="card" id="log">
+    <h2>Log</h2>
+    <div id="log-output">Ready.\n</div>
+  </div>
+
+</div>
+
+<script>
+const API = '';  // same origin
+
+function log(msg) {
+  const el = document.getElementById('log-output');
+  const ts = new Date().toLocaleTimeString();
+  el.textContent += `[${ts}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function api(path, body) {
+  const opts = body !== undefined
+    ? { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }
+    : { method: 'GET' };
+  const res = await fetch(API + path, opts);
+  const json = await res.json();
+  return json;
+}
+
+// Health check
+async function checkHealth() {
+  const badge = document.getElementById('health-badge');
+  try {
+    const r = await api('/health');
+    badge.textContent = 'online';
+    badge.className = 'ok';
+  } catch {
+    badge.textContent = 'offline';
+    badge.className = 'err';
+  }
+}
+checkHealth();
+setInterval(checkHealth, 10000);
+
+// Screenshot
+async function takeScreenshot() {
+  log('Taking screenshot...');
+  try {
+    const r = await api('/screenshot', {});
+    if (r.image) {
+      const img = document.getElementById('screenshot');
+      img.src = 'data:image/png;base64,' + r.image;
+      img.style.display = 'block';
+      log('Screenshot captured.');
+    } else {
+      log('Error: ' + (r.message || 'no image'));
+    }
+  } catch (e) { log('Error: ' + e.message); }
+}
+
+// Image click → fill coordinates
+function imgClick(e) {
+  const img = e.target;
+  const rect = img.getBoundingClientRect();
+  const scaleX = img.naturalWidth / rect.width;
+  const scaleY = img.naturalHeight / rect.height;
+  const x = Math.round((e.clientX - rect.left) * scaleX);
+  const y = Math.round((e.clientY - rect.top) * scaleY);
+
+  document.getElementById('move-x').value = x;
+  document.getElementById('move-y').value = y;
+  document.getElementById('click-x').value = x;
+  document.getElementById('click-y').value = y;
+  document.getElementById('coord-display').textContent = `Clicked: (${x}, ${y}) — coordinates copied to Move & Click inputs`;
+  log(`Image click at (${x}, ${y})`);
+}
+
+// Move
+async function moveMouse() {
+  const x = +document.getElementById('move-x').value;
+  const y = +document.getElementById('move-y').value;
+  log(`Moving mouse to (${x}, ${y})...`);
+  try {
+    const r = await api('/move', {x, y});
+    log(r.status === 'ok' ? 'Moved.' : 'Error: ' + r.message);
+  } catch (e) { log('Error: ' + e.message); }
+}
+
+// Click
+async function clickMouse() {
+  const x = +document.getElementById('click-x').value;
+  const y = +document.getElementById('click-y').value;
+  const button = document.getElementById('click-btn').value;
+  log(`Clicking (${x}, ${y}) [${button}]...`);
+  try {
+    const r = await api('/click', {x, y, button});
+    log(r.status === 'ok' ? 'Clicked.' : 'Error: ' + r.message);
+  } catch (e) { log('Error: ' + e.message); }
+}
+
+// Send Keys
+async function sendKeys() {
+  const keys = document.getElementById('keys-input').value;
+  log(`Sending keys: "${keys}"...`);
+  try {
+    const r = await api('/keys', {keys});
+    log(r.status === 'ok' ? 'Keys sent.' : 'Error: ' + r.message);
+  } catch (e) { log('Error: ' + e.message); }
+}
+
+// Bracket Command
+async function sendCommand() {
+  const cmd = document.getElementById('cmd-input').value;
+  log(`Command: ${cmd}`);
+  try {
+    const r = await api('/command', {command: cmd});
+    log(r.status === 'ok' ? 'Command OK.' : 'Error: ' + r.message);
+  } catch (e) { log('Error: ' + e.message); }
+}
+
+// Enter key support on inputs
+document.querySelectorAll('input').forEach(el => {
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      const btn = el.closest('.card').querySelector('button');
+      if (btn) btn.click();
+    }
+  });
+});
+</script>
+</body>
+</html>

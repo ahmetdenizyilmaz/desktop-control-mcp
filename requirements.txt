@@ -1,0 +1,13 @@
+Flask
+pyautogui
+mss
+Pillow
+pystray
+mcp
+psutil
+ultralytics
+transformers>=4.44.0,<4.49.0
+huggingface_hub
+easyocr
+torch
+numpy

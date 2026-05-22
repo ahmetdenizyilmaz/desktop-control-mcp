@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Runtime state
+.lock.json
+.claude-gui-images/
+
+# Screenshots and captured images (not part of source)
+screenshots/
+test/
+*.png
+*.jpg
+*.jpeg
+!templates/*.png
+!templates/*.jpg
+
+# Local debug / scratch scripts (CDP scripts for unrelated Tauri project)
+cdp_*.py
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
