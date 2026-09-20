@@ -335,26 +335,28 @@ def test_commit_guard():
 def test_staleness():
     print("\n7. a decision that arrived too late is thrown away")
 
+    # An intent and a target with no commit words in them, so this exercises
+    # staleness with the guard still switched on rather than around it.
     moved = ROWS + [{"type": "Dialog", "name": "Session expired", "id": "d"}]
     seen: list[int] = []
     frames = [list(ROWS), list(moved)]       # sense before, sense after
 
-    c, _ = wired(ok({"pick": choice_ans({"3": 0.95, "none": 0.05}, 0.95),
+    c, _ = wired(ok({"pick": choice_ans({"0": 0.95, "none": 0.05}, 0.95),
                      "commit": {"type": "noul", "noul": 0.01}}))
     p = fast.Pilot(sense=lambda: frames.pop(0), act=lambda i: seen.append(i) or True,
                    client=c)
-    t = p.step("buy the ticket")
+    t = p.step("find the morning departures")
     check("stale decision dropped", t.stale and not t.ok, t.note)
     check("nothing was clicked", seen == [], str(seen))
     check("the reason is recorded", "moved" in t.note, t.note)
 
     still = [list(ROWS), list(ROWS)]
-    c, _ = wired(ok({"pick": choice_ans({"3": 0.95, "none": 0.05}, 0.95),
+    c, _ = wired(ok({"pick": choice_ans({"0": 0.95, "none": 0.05}, 0.95),
                      "commit": {"type": "noul", "noul": 0.01}}))
     p = fast.Pilot(sense=lambda: still.pop(0), act=lambda i: seen.append(i) or True,
                    client=c)
-    t = p.step("buy the ticket")
-    check("a steady screen is acted on", t.ok and seen == [3], f"{t.note} {seen}")
+    t = p.step("find the morning departures")
+    check("a steady screen is acted on", t.ok and seen == [0], f"{t.note} {seen}")
 
     check("fingerprint is stable", fast.fingerprint(ROWS) == fast.fingerprint(list(ROWS)))
     check("fingerprint notices a change",
@@ -431,11 +433,103 @@ def test_verify():
     check("an unsure verdict escalates", not v.act and "unsure" in v.why, v.why)
 
 
+def test_adversarial_state():
+    print("\n11. page text cannot talk the guard down")
+
+    # jev-1.13 failure mode 6: state is data, and the model does not treat it
+    # as hostile. Every control name here was written by the merchant. So the
+    # deterministic guard runs first and is not reviewable by the model.
+    check("english pay button", fast.code_side_commit("click Pay now") == "pay")
+    check("turkish pay button",
+          fast.code_side_commit("Satın al butonuna tıkla") == "satın al",
+          fast.code_side_commit("Satın al butonuna tıkla"))
+    check("turkish confirm order",
+          bool(fast.code_side_commit("siparişi tamamla")),
+          fast.code_side_commit("siparişi tamamla"))
+    check("browsing is not a commit", fast.code_side_commit("scroll down") == "")
+
+    # The button lies about itself; the target name is still checked.
+    check("caught via the target name",
+          fast.code_side_commit("press the highlighted control",
+                                target={"name": "Ödeme"}) != "")
+    # And the page is judged by where it is, not only what it says.
+    check("caught via the window",
+          fast.code_side_commit("press the highlighted control",
+                                window="Checkout — step 3").startswith("context:"))
+
+    # The whole point: a confident model saying "harmless" changes nothing.
+    c, _ = wired(ok({"commit": {"type": "noul", "noul": 0.01}}))
+    g = fast.safe_to_act("click 'Pay now'", ROWS, client=c)
+    check("model cannot clear a code-side hit", not g.act, g.why)
+    check("and says which word", "'pay'" in g.why, g.why)
+
+    # An API failure must hold too — never "could not check, so go ahead".
+    c, _ = wired(*[FakeResponse(529, text="down")] * 3)
+    g = fast.safe_to_act("open the results list", ROWS, client=c)
+    check("an outage holds the guard", not g.act, g.why)
+
+
+def test_decide():
+    print("\n12. operation and target in one round trip")
+
+    c, http = wired(ok({"op": choice_ans({"click": 0.95, "wait": 0.05}, 0.95),
+                        "pick": choice_ans({"0": 0.93, "none": 0.07}, 0.93),
+                        "blocker": choice_ans({"nothing": 0.97}, 0.97),
+                        "commit": {"type": "noul", "noul": 0.02}}))
+    m = fast.decide("find the morning departures", ROWS, window="Tickets",
+                    client=c)
+    check("one round trip for four heads", len(http.sent) == 1, str(len(http.sent)))
+    check("operation chosen", m.operation == "click", m.operation)
+    check("target chosen", m.index == 0, str(m.index))
+    check("may act", m.verdict.act, m.verdict.why)
+    check("four questions sent", len(http.sent[0]["questions"]) == 4,
+          str(list(http.sent[0]["questions"])))
+
+    # "Not on screen yet" is a decision, not a failure — and it is the one a
+    # control table on its own cannot express.
+    c, _ = wired(ok({"op": choice_ans({"scroll_down": 0.9, "click": 0.1}, 0.9),
+                     "pick": choice_ans({"0": 0.4, "none": 0.6}, 0.4),
+                     "blocker": choice_ans({"nothing": 0.9}, 0.9),
+                     "commit": {"type": "noul", "noul": 0.01}}))
+    m = fast.decide("find the morning departures", ROWS, client=c)
+    check("scroll needs no target", m.operation == "scroll_down" and m.index is None,
+          m.line())
+    check("and is still a usable answer", m.verdict.act, m.verdict.why)
+    check("needs_target is honest", not m.needs_target)
+
+    c, _ = wired(ok({"op": choice_ans({"wait": 0.92, "click": 0.08}, 0.92),
+                     "pick": choice_ans({"0": 0.5, "none": 0.5}, 0.5),
+                     "blocker": choice_ans({"loading": 0.88, "nothing": 0.12}, 0.88),
+                     "commit": {"type": "noul", "noul": 0.01}}))
+    m = fast.decide("find the morning departures", ROWS, client=c)
+    check("waits while loading", m.operation == "wait", m.operation)
+    check("blocker reported", m.blocker == "loading", m.blocker)
+
+    # The guard still applies inside the combined call.
+    c, _ = wired(ok({"op": choice_ans({"click": 0.95}, 0.95),
+                     "pick": choice_ans({"3": 0.95, "none": 0.05}, 0.95),
+                     "blocker": choice_ans({"nothing": 0.9}, 0.9),
+                     "commit": {"type": "noul", "noul": 0.01}}))
+    m = fast.decide("press the highlighted control", ROWS, client=c)
+    check("guard fires on the Buy target", m.index is None, m.line())
+    check("guard named the word", "guard" in m.verdict.why, m.verdict.why)
+
+    c, _ = wired(*[FakeResponse(529, text="down")] * 3)
+    m = fast.decide("find the morning departures", ROWS, client=c)
+    check("an outage reads as blocked", m.operation == "blocked", m.operation)
+    check("and never as an action", m.index is None and not m.verdict.act)
+
+    check("operations are all executable",
+          set(fast.OPERATIONS) == {"click", "type", "select", "scroll_down",
+                                   "scroll_up", "wait", "done", "blocked"},
+          str(sorted(fast.OPERATIONS)))
+
+
 def main() -> int:
     print("System-1 decisions (jev + fast)")
     for t in (test_questions, test_parsing, test_transport, test_offline_stub,
               test_pick, test_commit_guard, test_staleness, test_state_budget,
-              test_rerank, test_verify):
+              test_rerank, test_verify, test_adversarial_state, test_decide):
         t()
     passed = sum(1 for _, o, _ in results if o)
     print(f"\n{passed}/{len(results)} passed")

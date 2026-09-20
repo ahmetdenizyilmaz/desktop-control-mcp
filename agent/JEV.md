@@ -6,18 +6,18 @@ Research note and design record. Branch `jev`. Nothing here is merged.
 
 ## 1. What Jev is
 
-TypeSafe AI came out of stealth on 2026-09-15 with **Jev**, which they call a
-*System One model*. It is not an LLM and does not generate text. You send it a
-**state** (a string or JSON object) and a map of **typed questions**; it
-returns one calibrated answer per question in a single parallel pass.
+TypeSafe AI came out of stealth on 2026-09-15 with **Jev**, the first of what
+they call **System One models**. It is not an LLM and generates no text. You
+send a **state** (string or JSON) and a map of **typed questions**; it returns
+one calibrated answer per question in a single parallel pass.
 
-Three question primitives, and that is the whole surface:
+Three primitives, and that is the whole surface:
 
 | primitive | asks | answer |
 |---|---|---|
 | **Noul** | a yes/no proposition | `noul` — P(yes), 0–1. The probability *is* the confidence |
-| **Choice** | pick one of up to 255 named options | `choice`, `probabilities` for every option, `confidence` |
-| **Score** | rate against 2–10 *ordered, described* levels | `score` (probability-weighted mean), `probabilities`, `legend`, `confidence` |
+| **Choice** | one of up to 255 named options | `choice`, `probabilities` for every option, `confidence` |
+| **Score** | 2–10 *ordered, described* levels | `score` (probability-weighted mean), `probabilities`, `legend`, `confidence` |
 
 ```http
 POST https://api.typesafe.ai/v1/systemone
@@ -36,21 +36,20 @@ Authorization: Bearer <key>
                   "criteria": ["Calm", "Frustrated", "Very angry"]}}}
 ```
 
-Numbers, from the vendor's docs and launch material:
-
 | | |
 |---|---|
-| latency | 70–500 ms end to end; their Doom demo held **212 ms median over 2,642 calls**, measured on a laptop |
-| price | **$0.042 / Mtok in, $0.00 out** — there is no generated text to charge for |
-| per decision | ~$0.0004 on their benchmark; a 60-control window is ~$0.00005 |
-| context | 64k total, **32k budget for `state` + longest question** |
+| latency | 70–500 ms, typically ~100 ms; the Doom demo held **212 ms median over 2,642 calls** |
+| price | **$0.042 / Mtok in, $0.00 out** — no generated text to charge for |
+| per decision | ~$0.0004 typical; a 60-control window is ~$0.000035 |
+| context | 64k total, **32k for `state` + longest question** |
 | rate | 1,200 req/min, 250k tok/s |
-| version | `jev-1.13.0`; `jev-latest` and `jev-preview` both alias it |
-| training | "RLCD" — Reinforcement Learning for Calibrated Decisions, rather than RLHF |
-| **input** | **text only. No images, no audio, no video.** |
+| version | `jev-1.13.0`; `jev-latest` and `jev-preview` alias it |
+| training | **RLCD** — Reinforcement Learning for Calibrated Decisions, not RLHF |
+| **input** | **text only. No images, audio or video.** |
+| SDKs | `pip install typesafe-sdk`, `npm i @typesafe-ai/sdk`, `langchain-typesafe` |
+| key | `console.typesafe.ai/settings/keys`, waitlisted early access |
 
-Their own four-workflow benchmark, vendor-reported and not independently
-verified:
+Their own four-workflow benchmark, **vendor-reported**:
 
 | model | accuracy | cost/case | latency |
 |---|---|---|---|
@@ -59,175 +58,234 @@ verified:
 | GPT-5.6 Sol | 74.1% | $0.0836 | 23.3 s |
 | Opus 5 | 73.1% | $0.1761 | 37.8 s |
 
-Read that honestly: **Jev is a cheaper, much faster, slightly less accurate
-judge**. It is ~5 points behind a frontier model at 1/400th the cost and
-1/90th the latency. Confidence gating is how you buy the accuracy back — you
-act on the concentrated answers and escalate the rest.
+**On verification:** one independent test has surfaced — 78 cases of a
+classifier benchmark on an M4 Pro Mac mini, where Jev scored 0.974 against the
+hosted API. The reviewer's own summary is the fair one: *the speed and cost
+claims survive contact with a third party, the accuracy claim sits a notch
+below the frontier, and 78 cases is too small to draw a production conclusion
+from.* Calibration — the thing every threshold in `fast.py` rests on — is
+precisely the claim that has **not** been independently reproduced. Treat
+accuracy parity as promising, not settled.
 
-Availability: early access, waitlisted keys, rolling out in batches. Also
-reachable through **Cloudflare Workers AI** (`typesafe/jev`), OpenRouter,
-Vercel and Netlify AI gateways, and AIMLAPI. SDKs: `typesafe-sdk` (Python),
-a JS/TS client, and `langchain-typesafe`.
+Read it honestly: **a cheaper, much faster, slightly less accurate judge.**
+Confidence gating is how you buy the accuracy back.
 
-## 2. Why it fits *this* project unusually well
+## 2. The nine documented failure modes
 
-The text-only limit is what kills Jev for most computer-use agents. It costs
-us nothing, because of a decision this project already made and measured
-(STATE.md §3):
+`docs.typesafe.ai/model-jaggedness/jev-1.13` is the most useful page TypeSafe
+publish, and it is the one that shaped the code on this branch:
+
+| # | failure | their mitigation | our response |
+|---|---|---|---|
+| 1 | **Literal reading** — answers the question you wrote, not the one you meant | state the exact condition; put boundary cases in `criteria` | every question in `fast.py` carries explicit `criteria` |
+| 2 | **Math and counting** — unreliable, error grows with size | do arithmetic in code | we never ask it to count; indices are *labels*, not sums |
+| 3 | **Dates as text**, not ordered quantities | extraction is judgment, arithmetic is not | no date question exists |
+| 4 | **Indirection** — double negatives, multi-hop | write directly, name the relevant state | questions are single-hop |
+| 5 | **Large state with irrelevant detail** degrades accuracy | filter and retrieve in code first | `MAX_ROWS = 60`, named controls only |
+| 6 | **Adversarial content** — "state is data, and jev-1.13 does not treat it as hostile" | explicit criteria; test adversarial input | **see §5** — this one needed real code |
+| 7 | **Contradictory instructions vs criteria** | align them as extensions of each other | — |
+| 8 | **No structural invariants** — P(X) + P(¬X) ≠ 1 across questions | don't assume arithmetic identities | `margin` compares *within* one distribution only |
+| 9 | **Generation** — cannot write text | bounded extraction, or a generative model | Claude keeps all text |
+
+Also documented: pin to `jev-1.13.0` rather than `jev-latest` once thresholds
+are tuned, since calibration is a property of the checkpoint; and always log
+the response's `.model`.
+
+## 3. How people are actually using it
+
+Five days in, there are ~72 public projects. The relevant cluster is not the
+support-ticket routing TypeSafe lead with — it is **agents that drive
+interfaces**:
+
+- **`browser-use/jev-ultrafast`** — the one worth copying. Abandons the
+  screenshot-per-decision loop entirely: parses the page into an **indexed
+  element table**, and a single request picks *both* the operation and the
+  target element. Google Flights Zürich→London in **7.09 s median against
+  9.45 s** baseline (25% faster), browser protocol calls **1,092 → 101**,
+  cost $0.0039/task. A small LLM is called *only* when the operation is
+  `TYPE_TEXT`. Action space: `CLICK, TYPE_TEXT, SELECT, SCROLL_UP,
+  SCROLL_DOWN, WAIT, DONE, BLOCKED`.
+- **`droidrun/mobile-jev`** — drove Uber on a real Android phone, 9 actions
+  in ~21 s.
+- **`typesafe-computer-use`** — macOS, OCR plus bounded Jev action selection.
+  The closest thing to this project that exists publicly.
+- **Games**: `jev-plays-pokemon-red` (PyBoy), `typesafe-mario`,
+  `typesafe-snake`, `jev-tetris` (scores all reachable placements),
+  `JevScape` (RuneScape), `jev-drone`. **Every one reads structured
+  state from an emulator or engine — none reads pixels.**
+- Others: `jev-palette` (ranks 77 commands per keystroke), trading bots,
+  clinic triage, YouTube sponsor detection from captions.
+
+The documented patterns worth stealing: **speculative fan-out** (ask
+everything at once — TypeSafe report 12.2× cheaper and 10× faster than
+sequential calls), **confidence-gated routing** (thresholds per action by cost
+of being wrong), **composite scoring** (atomic Scores, weights in code),
+**the cascade** (Jev routes, code handles what it can, a frontier model only
+for the hard remainder), **retrieve-then-judge** (filter before sending —
+failure mode 5).
+
+## 4. Why it fits *this* project
+
+The text-only limit kills Jev for most computer-use agents. It costs us
+nothing, because of a decision already made and measured (STATE.md §3):
 
 > UI Automation resolved 100% of 32 targets in 0.52 s; the vision pipeline
 > managed 44% in 84.24 s, and 0% on icons, canvas-drawn controls and anything
 > under 26px. **Screenshots are for confirming a result, never for deciding
 > where to click.**
 
-The engine already turns the screen into text before anything decides
-anything — `locator.walk` yields a control table, `browser.elements` yields an
-indexed page, `read_labels` yields OCR labels. The state Jev demands is the
-state we already produce. We would be feeding it the exact artefact the
-architecture was built around.
+`locator.walk` already yields a control table; `browser.elements` already
+yields an indexed page. That is *exactly* the artefact `jev-ultrafast` had to
+build from scratch — we have had it since phase 01.
 
-What is expensive in the loop is not the clicking. `actuator` Invoke is
-sub-millisecond and works on background windows. What is expensive is the
-**round trip to Claude**, and a large share of those turns are not reasoning
-at all — they are recognition:
-
-- "which of these 60 controls is the one?"
-- "did that step do what it was for?"
-- "is this a cookie banner, a login wall, or the checkout dialog?"
-- "is the thing I am about to click the one that spends the money?"
-
-Those are 200 ms questions. Today they cost a full turn each.
-
-**The division of labour this argues for:**
+What is expensive is the **Claude round trip**, and a large share of those
+turns are recognition, not reasoning: which control, did it work, what is
+blocking, is this the click that spends money. Those are 200 ms questions.
 
 ```
 Claude  — System 2.  Reads the task, writes the plan, decides what the
                      questions ARE, diagnoses anything that went wrong.
-Jev     — System 1.  Answers those questions, over and over, inside the
-                     loop, at a rate the user does not wait on.
+Jev     — System 1.  Answers them, inside the loop, at a rate the user
+                     does not wait on.
 ```
 
 The seam is **confidence**, not task type — the same trust ladder `replay.py`
-already runs on, with one more rung near the bottom that is ~50× cheaper than
-the rung above it.
+runs on, with one more rung ~50× cheaper than the rung above it.
 
-## 3. Five places in the existing engine
+### Five call sites in the existing engine
 
 | site | today | with Jev |
 |---|---|---|
-| `locator._resolve_among` | several controls share a name → take the *k*-th in tree order, or the one nearest an anchor | an ordinal dies the moment a page reflows. A Choice over the candidates, gated on **margin** (two identical "Buy" buttons produce a confident *split*, which confidence alone waves through) |
-| `replay._alternate` — rung 3 | one idea: look the name up via OCR labels | a Choice over everything in the window, tried **before** waking Claude at rung 4/5. Turns one trick into a general repair for 200 ms |
-| `act.check` | structural `Verify` predicates | a Noul over the before/after control diff catches the interesting failure: a screen that is neither the old one nor the intended one |
-| `retrieval.search` | lexical TF-IDF + fuzzy, which by its own docstring *cannot match "stock market" to "borsa"* and therefore hands candidates to Claude | re-rank the top-N with one Choice. The docstring reserved `EMBEDDINGS` for this gap; this closes it without a 90 MB download |
-| *(new)* **commit guard** | — | the point of a fast loop is to stop asking permission for every click. That is only safe if something cheap watches for the click that spends money. At $0.00005 you can afford to ask before **every** action, which is the only frequency that protects anything |
+| `locator._resolve_among` | several same-named controls → the *k*-th in tree order, or nearest anchor | an ordinal dies when a page reflows. A Choice gated on **margin** — two identical "Buy" buttons give a *confident split*, which a confidence threshold waves through |
+| `replay._alternate` (rung 3) | one idea: OCR label lookup | a Choice over the whole window, tried **before** waking Claude at rung 4/5 |
+| `act.check` | structural `Verify` predicates | a Noul over the before/after diff catches the screen that is neither the old one nor the intended one |
+| `retrieval.search` | lexical TF-IDF that by its own docstring cannot match "stock market" to "borsa" | re-rank top-N with one Choice; closes the gap `EMBEDDINGS` was reserved for, with no 90 MB download |
+| *(new)* **commit guard** | — | the point of a fast loop is to stop asking permission per click; that is only safe if something cheap watches for the click that spends money |
 
-Costs at working speed: a 60-control window state is ~830 tokens ≈ **$0.000035
-per decision**. At 5 Hz that is **$0.63/hour** — and a desktop agent does not
-need 5 Hz. Their Doom demo's "$7/hour" is 10 Hz with a much larger state.
+5 Hz costs **$0.63/hour**. The Doom demo's $7/hour is 10 Hz with a far larger
+state.
 
-## 4. The three use cases, assessed honestly
+## 5. The finding that changed the code
 
-**Online shopping — good fit.** The loop is search → filter → compare N → pick
-→ cart → checkout, and comparing N items is exactly the *speculative fan-out*
-pattern: one state (the results page), fifteen questions at once, costing the
-extra question tokens and almost no extra wall-clock. Claude never reads the
-results page. Escalate only on low confidence.
+Failure mode 6 is not a footnote for this project — it is the central risk:
 
-**Plane / bus tickets — best fit, and the one that needs the guard.** This is
-where latency buys something real rather than just feeling nicer: inventory
-moves, seat holds expire, fares requote. A 0.2 s decision versus a 10 s turn
-is the difference between getting the seat and getting "no longer available".
-It is also where an over-eager click costs actual money, so the commit guard
-is not optional here — it is the thing that makes running the loop fast
-*acceptable*.
+> State is data, and jev-1.13 does not treat it as hostile by default.
+> Content written to adversarially steer the model can move the answer.
 
-**Games — mostly does not work here, and this is worth being blunt about.**
-TypeSafe's Doom demo reads structured game state *from the emulator* — enemy
-kind, distance, bearing as JSON — not pixels, and it happily sees through
-walls. On this desktop there is no such feed. UIA returns nothing useful for a
-DirectX or Unity canvas; the project's own measurement was **0% on
-canvas-drawn controls**. So Jev drives games only where the state is already
-text: browser games with a real DOM (`browser.elements` gives it to us for
-free), turn-based and card games, board games, anything with a memory reader
-or a published game API. A native FPS is out of reach, and no amount of Jev
-latency changes that — the bottleneck is perception, which Jev does not do.
+Every control name we send comes off a web page or an application we do not
+control. **On a checkout page, the merchant wrote that text.** A pay button
+labelled "Continue browsing" — through sloppiness or design — would talk the
+commit guard down, and the commit guard is the only thing between a fast loop
+and a real purchase.
 
-## 5. What is on this branch
+So `fast.py` runs **two independent guards, and either one holds**:
+
+1. `code_side_commit()` — deterministic, page-independent, not reviewable by
+   the model. Word list in English **and Turkish** (`satın al`, `ödeme`,
+   `siparişi tamamla`, `onayla`), plus a context check on the window title or
+   URL (`checkout`, `3D Secure`, `banka`). An English-only list would miss
+   every site this is actually aimed at.
+2. The model — catches what no word list anticipated.
+
+**The model may add caution. It may never remove it.** An API outage, a
+low-confidence reading and an offline stub all resolve to hold.
+
+## 6. What is on this branch
 
 | file | |
 |---|---|
-| `core/jev.py` | the client. Three primitives with validation, typed answers, retry/backoff on 429·5xx·529, a client-side 1200/min cap, sync + async, connection pooling, cost and p50/p95 accounting, and a deterministic **offline stub** so the loop can be built, tested and measured with no API key |
-| `core/fast.py` | the desktop bindings: control table → state, the five question templates, the confidence/margin gates, the commit guard, and `Pilot` — a sense→decide→act loop with a staleness check |
-| `tests/test_jev.py` | 79 checks, fully offline — no network, no window, no key |
+| `core/jev.py` | client — three primitives with validation, typed answers, retry/backoff, client-side rate cap, sync + async, pooling, cost and p50/p95 accounting, deterministic **offline stub** |
+| `core/fast.py` | desktop bindings — control table → state, question templates, confidence/margin gates, the two-layer commit guard, `decide()` (operation + target + blocker + guard in one round trip), `Pilot` loop |
+| `tests/test_jev.py` | **103 checks, fully offline** — no network, key or window |
 
-Two design decisions worth keeping:
+Three design decisions worth keeping:
 
-**An offline stub must never be actable.** `Decision.real` is False without a
-key, and every gate in `fast.py` refuses it. A missing credential has to
-surface as "escalate to Claude", not as a fast agent clicking confidently at
-random. STATE.md §3: fail loudly, never plausibly.
+**An offline stub is never actable.** `Decision.real` is False without a key
+and every gate refuses it. A missing credential must surface as "escalate to
+Claude", not as a fast agent clicking confidently at random. STATE.md §3: fail
+loudly, never plausibly.
 
-**A late decision is thrown away, not applied.** The answer describes the
-screen as it was ~200 ms ago. `Pilot` re-senses and compares a fingerprint
-before acting; if the window moved, the tick is dropped. Dropping a tick costs
-200 ms. Not dropping it costs whatever was underneath the button. This is also
-why `Pilot` is deliberately **not** pipelined — requesting decision *N+1*
-while acting on *N* would hide the latency, but every action changes the state
-the next decision is about, so the pipelined answer is stale by construction.
-Doom can live with that; a checkout page cannot.
+**A late decision is discarded, not applied.** The answer describes the screen
+as it was ~200 ms ago; `Pilot` re-senses and fingerprints before acting.
+Dropping a tick costs 200 ms; not dropping it costs whatever was under the
+button. This is also why `Pilot` is deliberately **not** pipelined —
+requesting decision *N+1* while acting on *N* hides the latency, but every
+action changes the state the next decision is about, so a pipelined answer is
+stale by construction. Doom tolerates that; a checkout page does not.
 
-Run it:
+**Operation and target in one round trip.** Copied from `jev-ultrafast`: the
+heads read the same state, so four questions cost one network call. Asking
+separately would be 4× the latency for identical information. `scroll`,
+`wait`, `done` and `blocked` resolve with no target and are still good
+answers — "the thing is not on screen yet" is a decision, and it is the one a
+control table alone cannot express.
 
 ```
-python tests/test_jev.py          # 79/79, no key needed
+python tests/test_jev.py          # 103/103, no key needed
 ```
 
-Not wired into `tests/run_all.py`, and no existing file is modified — see §7.
+## 7. The three use cases, assessed
 
-## 6. Risks
+**Shopping — good.** Comparing N results is speculative fan-out: one state,
+fifteen questions, costing extra tokens and almost no wall-clock. Claude never
+reads the results page.
 
-- **Early access.** Needs a waitlisted key. Cloudflare Workers AI is the
-  usable path today; `core/jev.py` takes an `endpoint` override for it.
-- **~5 points behind Opus 5** on the vendor's own benchmark, vendor-reported.
-  Gate accordingly; do not let it decide anything it is not confident about.
-- **No rationale.** When Jev is wrong you get a probability distribution and
+**Tickets — best fit, and the one that needs §5.** `jev-ultrafast` already
+proved the shape: Google Flights end-to-end in 7.1 s. Latency buys something
+real here — seat holds expire, fares requote. It is also where an over-eager
+click costs money, which is why the guard is not optional.
+
+**Games — mostly does not work here.** Every Jev game project reads
+structured state from an emulator or engine. On this desktop there is no such
+feed: UIA returns nothing for a DirectX or Unity canvas, and this project's
+own measurement was **0% on canvas-drawn controls**. Jev drives games only
+where state is already text — browser games with a real DOM, turn-based, card
+games, or anything with a memory reader or game API. A native FPS is out of
+reach, and Jev's speed is irrelevant to that: the bottleneck is perception,
+which Jev does not do.
+
+## 8. Risks
+
+- **Early access**, waitlisted key. Cloudflare Workers AI (`typesafe/jev`),
+  OpenRouter, Vercel and Netlify gateways are reachable meanwhile;
+  `Client(endpoint=...)` takes the override.
+- **Calibration is independently unverified** — and every threshold here
+  depends on it. Run in shadow mode against known-good runs before trusting a
+  threshold, as TypeSafe themselves recommend.
+- **No rationale.** A wrong answer comes with a probability distribution and
   nothing else. For an agent that writes `lessons.json` from its own failures
-  that is a real loss. Mitigation: journal state + probabilities on every
-  decision and let Claude post-hoc diagnose the low-confidence ones.
-- **Calibration is not correctness.** A confident answer can be wrong; what
-  calibration buys is that confident answers are wrong *less often*, which is
-  what makes a threshold meaningful.
-- **Network RTT from Turkey** is on top of the 70–500 ms. Unmeasured. First
-  thing to check with a real key — `Client.stats.report()` prints p50/p95.
-- **A vendor dependency in the inner loop.** Every gate degrades to "escalate
-  to Claude" on failure, so an outage makes the agent slow, not wrong. Keep
-  it that way.
+  that is a real loss. Journal state + probabilities and let Claude diagnose
+  the low-confidence ones after the fact.
+- **Network RTT from Turkey** is on top of 70–500 ms and unmeasured.
+  `Client.stats.report()` prints p50/p95 once a key exists.
+- **A vendor in the inner loop.** Every gate degrades to "escalate to Claude"
+  on failure, so an outage makes the agent slow, not wrong. Keep it that way.
 
-## 7. Note on the repository
+## 9. Note on the repository
 
-Only 15 files are tracked in git, and they are the *old* root project
-(`controller.py`, `mcp_server.py`, `server.py`, …). The entire `agent/` tree —
-the actual product, `core/`, `tools_sdk.py`, 799 passing tests — is
-**untracked and uncommitted**.
-
-That has a consequence for this branch: only the new files added here are
-isolated by it. Editing an existing file under `agent/` would change the
-working tree on `main` too, because git is not managing those files at all.
-That is why `tests/run_all.py` was left alone. When this merges, the one-line
-addition is:
+Only 15 files are tracked in git, all from the *old* root project. The entire
+`agent/` tree — `core/`, `tools_sdk.py`, 799 passing tests — is **untracked
+and uncommitted**. Only *new* files added here are isolated by this branch;
+editing an existing `agent/` file would change `main` too, because git is not
+managing those files. That is why `tests/run_all.py` was left alone. On merge:
 
 ```python
 ("test_jev", "system-1 decisions — gates, guard, staleness", False),
 ```
 
-Independently of Jev: committing `agent/` is worth doing soon.
+Committing `agent/` is worth doing soon, independently of any of this.
 
 ## Sources
 
 - https://docs.typesafe.ai — API reference, primitives, models, patterns
+- https://docs.typesafe.ai/model-jaggedness/jev-1.13 — the nine failure modes
 - https://typesafe.ai/blog/introducing-system-one-models-and-jev — launch
 - https://developers.cloudflare.com/ai/models/typesafe/jev/ — schemas, samples
-- https://www.langchain.com/blog/building-a-harness-with-jev — harness patterns
+- https://github.com/browser-use/jev-ultrafast — indexed action space, 7.09 s
+- https://github.com/browser-use/jev-ultrafast/blob/main/docs/performance.md
+- https://dev.to/valyuai/how-to-use-jev-a-practical-guide-to-typesafes-system-one-model-g5e — patterns
+- https://flaviocopes.com/jev/ — architecture deep dive, RLCD
+- https://www.langchain.com/blog/building-a-harness-with-jev — harness middleware
+- https://github.com/cobanov/awesome-jev — the project directory
 - https://www.datacamp.com/blog/system-one-models-jev — benchmark table
-- https://www.theregister.com/ai-and-ml/2026/09/16/typesafe_ai_debuts_model/ — Doom
-- https://github.com/tirukovelamanoj/jev-plays-doom — the loop, 212 ms/2,642 calls
+- https://github.com/tirukovelamanoj/jev-plays-doom — 212 ms over 2,642 calls

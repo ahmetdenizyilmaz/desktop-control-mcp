@@ -62,6 +62,39 @@ MARGIN = 0.25
 #: low: a false alarm costs one round trip, a miss costs a plane ticket.
 COMMIT_STOP = 0.30
 
+#: Words that make the *code* call something a commit, whatever the model says.
+#:
+#: This list exists because of a documented property of jev-1.13: "state is
+#: data, and the model does not treat it as hostile by default. Content
+#: written to adversarially steer the model can move the answer."
+#: (docs.typesafe.ai/model-jaggedness/jev-1.13, failure mode 6.)
+#:
+#: Every control name we send comes off a web page or an application we do not
+#: control. On a checkout page that text is written by the merchant. A page
+#: that labels its pay button "Continue browsing" — by sloppiness or by
+#: design — would talk the guard down, and the guard is the only thing
+#: standing between a fast loop and a real purchase. So the model is allowed
+#: to *add* caution and never to remove it.
+#:
+#: Turkish included deliberately: the ticketing and shopping sites this is
+#: aimed at are Turkish, and an English-only list would miss every one of them.
+COMMIT_WORDS = (
+    # English
+    "pay", "payment", "checkout", "buy", "purchase", "order now", "place order",
+    "confirm", "subscribe", "submit", "send", "book now", "reserve", "donate",
+    "delete", "remove", "cancel booking", "agree", "accept terms",
+    # Turkish
+    "öde", "odeme", "ödeme", "satın al", "satin al", "satınal", "sepeti onayla",
+    "siparişi tamamla", "siparisi tamamla", "onayla", "rezervasyon",
+    "devam et ve öde", "kaydet ve öde", "sil", "iptal et", "kabul ediyorum",
+)
+
+#: Window titles / URLs that put the whole screen in commit territory. A page
+#: is judged by where it is, not only by what it calls its buttons.
+COMMIT_CONTEXT = ("checkout", "payment", "ödeme", "odeme", "sepet", "basket",
+                  "cart", "billing", "3d secure", "3dsecure", "secure.",
+                  "bank", "banka", "kart", "card details")
+
 #: How many controls to put in the state. The full table is capped at 100 by
 #: `find_controls` already; 60 keeps a decision near 2k tokens (~$0.00008).
 MAX_ROWS = 60
@@ -249,6 +282,40 @@ def q_blocker(rows_hint: str = "") -> jev.Choice:
                              "elsewhere or needs scrolling to"})
 
 
+#: What the engine can actually carry out. Deliberately small and closed —
+#: the model picks from what `actuator` can do, so an answer is always
+#: executable and "unsupported action" cannot happen.
+OPERATIONS: dict[str, str] = {
+    "click": "Press the chosen control",
+    "type": "Put text into the chosen field (the text itself is written "
+            "elsewhere — this only decides that typing is what is needed)",
+    "select": "Choose a value from the chosen dropdown or list",
+    "scroll_down": "The thing needed is below the visible area",
+    "scroll_up": "The thing needed is above the visible area",
+    "wait": "The screen is still loading or settling; do nothing yet",
+    "done": "The goal has been reached; nothing more is needed",
+    "blocked": "Something is in the way that this loop cannot clear",
+}
+
+
+def q_operation(intent: str) -> jev.Choice:
+    """What *kind* of action comes next — asked in the same breath as which
+    control.
+
+    Browser Use's `jev-ultrafast` calls this "two decisions, one network round
+    trip", and it is the single biggest structural win available: the
+    operation head and the target head read the same state, so asking both
+    costs one round trip instead of two. On their Google Flights run that
+    contributed to a median task time of 7.09s against 9.45s, and browser
+    protocol calls dropping from 1,092 to 101.
+    """
+    return jev.Choice(
+        instructions={"goal": intent,
+                      "task": "What kind of action moves this goal forward "
+                              "right now?"},
+        criteria=dict(OPERATIONS))
+
+
 # --------------------------------------------------------------------------
 # The calls
 # --------------------------------------------------------------------------
@@ -287,17 +354,155 @@ def pick(intent: str, rows: Sequence[Mapping[str, Any]], *,
     return i, v
 
 
+@dataclass(frozen=True)
+class Move:
+    """One decision: what to do, to what, and whether it may be done."""
+
+    operation: str
+    index: int | None
+    verdict: Verdict
+    blocker: str = ""
+
+    @property
+    def needs_target(self) -> bool:
+        return self.operation in {"click", "type", "select"}
+
+    def line(self) -> str:
+        tgt = "" if self.index is None else f" #{self.index}"
+        blk = f" blocker={self.blocker}" if self.blocker else ""
+        return f"{self.operation}{tgt}{blk} | {self.verdict.line()}"
+
+
+def decide(intent: str, rows: Sequence[Mapping[str, Any]], *,
+           window: str = "", at: float = CONFIDENT, margin: float = MARGIN,
+           guard: bool = True, client: jev.Client | None = None) -> Move:
+    """Operation, target, guard and blocker — one state, one round trip.
+
+    This is the shape Browser Use arrived at for `jev-ultrafast`, and it is
+    worth copying exactly: the heads all read the same state, so four
+    questions cost one network round trip and a few hundred extra tokens.
+    Asking them separately would be four times the latency for the same
+    information, and at 200ms a call that is the whole budget.
+
+    A target is only required for the operations that act on one. `scroll`,
+    `wait`, `done` and `blocked` resolve with `index is None` and are still
+    perfectly good answers — "the thing is not on screen yet" is a decision,
+    not a failure, and it is the one a control table alone cannot express.
+    """
+    c = client or jev.client()
+    qs: dict[str, jev.Question] = {"op": q_operation(intent),
+                                   "pick": q_pick(intent, rows),
+                                   "blocker": q_blocker()}
+    if guard:
+        qs["commit"] = q_commit(intent)
+
+    try:
+        d = c.ask(rows_to_state(rows, window=window), qs)
+    except jev.JevError as e:
+        return Move("blocked", None, Verdict(False, f"no decision: {e}"))
+
+    op_v = _gate(d, "op", at)
+    if not op_v.act:
+        return Move("blocked", None, op_v)
+    operation = getattr(op_v.answer, "choice", "blocked")
+
+    blk = d.answers.get("blocker")
+    blocker = getattr(blk, "choice", "") if blk else ""
+    if blocker == "nothing":
+        blocker = ""
+
+    if operation not in {"click", "type", "select"}:
+        return Move(operation, None, op_v, blocker)
+
+    pick_v = _gate(d, "pick", at, margin)
+    if not pick_v.act:
+        return Move(operation, None, pick_v, blocker)
+    choice = getattr(pick_v.answer, "choice", "")
+    if choice == "none":
+        return Move(operation, None,
+                    Verdict(False, "no control here fits", pick_v.answer, d),
+                    blocker)
+    try:
+        i = int(choice)
+    except ValueError:
+        return Move(operation, None,
+                    Verdict(False, f"unparsable choice {choice!r}",
+                            pick_v.answer, d), blocker)
+    if not 0 <= i < len(rows):
+        return Move(operation, None,
+                    Verdict(False, f"index {i} out of range", pick_v.answer, d),
+                    blocker)
+
+    if guard:
+        word = code_side_commit(intent, window=window, target=rows[i])
+        if word:
+            return Move(operation, None,
+                        Verdict(False, f"code-side guard: {word!r}",
+                                pick_v.answer, d), blocker)
+        g = d.answers.get("commit")
+        if isinstance(g, jev.NoulAnswer) and g.p >= COMMIT_STOP:
+            return Move(operation, None,
+                        Verdict(False, f"commit guard (p={g.p:.2f})", g, d),
+                        blocker)
+
+    return Move(operation, i, pick_v, blocker)
+
+
+def code_side_commit(intent: str, *, window: str = "",
+                     target: Mapping[str, Any] | None = None) -> str:
+    """Does *code* think this is a commit, without asking anything?
+
+    Returns the matched word, or "" for none. This runs before and alongside
+    the model, and its verdict is not reviewable: `safe_to_act` holds if
+    either this or the model fires. The model may add caution; it may never
+    remove it.
+
+    The reason is failure mode 6 of jev-1.13 — state is data, and the model
+    does not treat it as hostile. Every string we put in the state came off a
+    page we do not control, and on a checkout page the merchant wrote it.
+    A cheap, deterministic, page-independent check is what stops a mislabelled
+    button from talking the guard down.
+    """
+    hay = f" {intent.lower()} "
+    if target:
+        hay += f" {str(target.get('name', '')).lower()} "
+    for w in COMMIT_WORDS:
+        if w in hay:
+            return w
+    ctx = (window or "").lower()
+    for w in COMMIT_CONTEXT:
+        if w in ctx:
+            return f"context:{w}"
+    return ""
+
+
 def safe_to_act(intent: str, rows: Sequence[Mapping[str, Any]], *,
                 window: str = "", stop_at: float = COMMIT_STOP,
+                target: Mapping[str, Any] | None = None,
                 client: jev.Client | None = None) -> Verdict:
     """The guard on its own, for call sites that did not batch it.
 
-    Note the inverted gate: this is the one question where an *unreliable*
-    answer must not mean "go ahead". An offline stub, a low-confidence
-    reading, or an outright failure all resolve to hold.
+    Two independent checks, and *either* one holds:
+
+      1. `code_side_commit` — deterministic, cannot be argued with by page
+         content, catches the obvious cases in two languages;
+      2. the model — catches everything phrased in a way no word list
+         anticipated.
+
+    Note the inverted gate on the model's half: this is the one question where
+    an *unreliable* answer must not mean "go ahead". An offline stub, a
+    low-confidence reading, or an outright API failure all resolve to hold.
     """
+    word = code_side_commit(intent, window=window, target=target)
+    if word:
+        return Verdict(False, f"code-side guard: {word!r} — confirm first")
+
     c = client or jev.client()
-    d = c.ask(rows_to_state(rows, window=window), {"commit": q_commit(intent)})
+    try:
+        d = c.ask(rows_to_state(rows, window=window),
+                  {"commit": q_commit(intent)})
+    except jev.JevError as e:
+        return Verdict(False, f"guard could not be checked ({e}) — hold")
     if not d.real:
         return Verdict(False, "offline stub cannot clear a commit guard", None, d)
     a = d.answers.get("commit")
@@ -424,6 +629,14 @@ class Pilot:
                                       None, v))
         if i is None:
             return self._log(Tick(False, v.why, None, v))
+
+        # The model has now named a target, so the deterministic guard can see
+        # what it is. This is the check the model cannot be talked out of.
+        if self.guard:
+            word = code_side_commit(intent, window=self.window, target=rows[i])
+            if word:
+                return self._log(Tick(False, f"code-side guard: {word!r} — "
+                                             f"hand to Claude or the user", None, v))
 
         if fingerprint(self.sense()) != before:
             return self._log(Tick(False, "screen moved while deciding — "
