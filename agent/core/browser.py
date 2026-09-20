@@ -431,13 +431,36 @@ class Browser:
             if (r.width < 1 || r.height < 1) continue;
             const cs = getComputedStyle(el);
             if (cs.visibility === 'hidden' || cs.display === 'none') continue;
+            // A wrapper's aria-label beats a placeholder.
+            //
+            // Web components routinely put the authored accessible name on
+            // the custom element and leave the inner <input> bare. Migros is
+            // the case that found this: its site search is an <input> inside
+            // <sm-product-search-combobox aria-label="Arama alanı">, and the
+            // input's own placeholder is a rotating advert — "Ülker
+            // Ürünlerini Keşfet!". Read the placeholder and the search box
+            // announces itself as a promotion, which is not something a
+            // person or a model can be expected to pick.
+            //
+            // Bounded to three levels: a wrapper is near, and a labelled
+            // page region far above would be worse than the placeholder.
+            let wrapper = '';
+            let p = el.parentElement;
+            for (let d = 0; d < 3 && p && !wrapper; d++, p = p.parentElement) {
+              wrapper = (p.getAttribute('aria-label') || '').trim();
+            }
             const name = (el.getAttribute('aria-label') || el.innerText
-                          || el.value || el.placeholder || el.title || '').trim();
+                          || el.value || wrapper || el.placeholder
+                          || el.title || '').trim();
             out.push({
               role: el.getAttribute('role') || el.tagName.toLowerCase(),
               name: name.slice(0, 80),
               tag: el.tagName.toLowerCase(),
-              testid: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
+              // id is a last-resort identity hint, and often a strong one:
+              // "product-search-combobox--trigger" says what a placeholder
+              // full of marketing does not.
+              testid: el.getAttribute('data-testid') || el.getAttribute('data-test')
+                      || el.id || '',
               text: (el.innerText || '').trim().slice(0, 60),
               enabled: !el.disabled
             });
@@ -475,8 +498,17 @@ class Browser:
         if (cs.visibility === 'hidden' || cs.display === 'none'
             || cs.opacity === '0') continue;
         const tag = el.tagName.toLowerCase();
+        // See elements(): a web component puts the authored accessible name
+        // on the custom element and leaves the inner <input> bare, so a
+        // wrapper's aria-label has to outrank a placeholder. Bounded to
+        // three levels — a wrapper is near, a labelled page region is not.
+        let wrapper = '';
+        let par = el.parentElement;
+        for (let d = 0; d < 3 && par && !wrapper; d++, par = par.parentElement) {
+          wrapper = (par.getAttribute('aria-label') || '').trim();
+        }
         const name = (el.getAttribute('aria-label') || el.innerText
-                      || el.placeholder || el.title
+                      || wrapper || el.placeholder || el.title
                       || el.getAttribute('name') || el.value || '')
                      .replace(/\s+/g, ' ').trim().slice(0, 70);
         el.setAttribute('data-da-idx', String(i));
@@ -490,7 +522,8 @@ class Browser:
                  ? String(el.value || '').slice(0, 40) : '',
           checked: !!el.checked,
           disabled: !!el.disabled,
-          testid: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
+          testid: el.getAttribute('data-testid') || el.getAttribute('data-test')
+                  || el.id || '',
           inview: r.top < vh && r.bottom > 0 && r.left < vw && r.right > 0,
           options: tag === 'select'
             ? Array.from(el.options).slice(0, 8).map(o => o.text.trim()) : []

@@ -318,6 +318,71 @@ Correctness spot-check, not just well-formedness: given a table containing
 "Sort by price" and a "Loading results…" label, it picked index 3 at
 confidence **1.00** and put the loading noul at **0.95**.
 
+## 11. First live run on a real site, 2026-09-20
+
+`jev_live_shop.py` against migros.com.tr, goal "search the site for milk
+(süt) and show the milk products". Headless, real clicks.
+
+```
+[1] 446ms  op=type    target='Arama alanı'   -> filled
+[2] 379ms  op=submit  -> pressed Enter
+[3] 386ms  op=done    -> goal reached
+4 calls, 0 failed, p50 453ms, $0.0006
+```
+
+Verified independently: `migros.com.tr/arama?q=süt`, title "süt - Migros",
+18 milk products on the page. Three decisions, three correct, about 1.2s of
+model time and six hundredths of a cent for the whole task.
+
+It took four attempts, and each failure was worth more than the success.
+
+**The search box announced itself as an advert.** Migros's site search is an
+`<input>` inside `<sm-product-search-combobox aria-label="Arama alanı">`, and
+the input's own placeholder is a rotating promotion — "Ülker Ürünlerini
+Keşfet!". Both `elements()` and `SNAPSHOT_JS` resolved the name as
+`aria-label || innerText || placeholder`, so the search field was presented
+to the model as "Discover Ülker Products!". It answered `none`, correctly —
+no person would have picked that either. Fixed by letting a wrapper's
+`aria-label` outrank a placeholder, bounded to three ancestors, and by
+falling back to the DOM `id` for identity. **This was a pre-existing bug in
+the browser layer that only a decision model was blunt enough to expose.**
+
+**Two index spaces.** The first working version chose the right control and
+then failed with "no element for 8": `elements()` numbers one list and
+`act()` resolves against the `data-da-idx` that `snapshot()` stamps. The
+runner now reads the stamped snapshot, which is also what `jev-ultrafast`
+does, and keeps a dense-row → DOM-index map.
+
+**It filled the same box eight times.** Nothing in the state showed what a
+field already contained, and no operation submitted anything — so every
+turn, typing was still the best move. Fixed by carrying the field's current
+value into the row (`v`) and adding a `submit` operation. A repeat detector
+now stops any future version of this after three identical moves.
+
+**A finished task read as "blocked".** On the results page the model ranked
+`done` top at 0.74 and a flat 0.80 gate threw it away. Thresholds are now
+per operation (`OP_GATE`): the ones that act on a control stay at 0.80, and
+`submit` with them because Enter can send a form; `done`, `wait` and the
+scrolls sit at 0.5–0.6, because being wrong about those costs a wasted
+344ms, which is what blocking cost anyway.
+
+### The guard
+
+On the 113 controls of a real results page, the deterministic guard flagged
+**0** — no false positives. The model guard, asked on that same real page:
+
+| intent | verdict |
+|---|---|
+| add this milk to the basket | **allow**, p(commit)=0.22 |
+| complete the order and pay for it | **hold** — code-side caught `'pay'` |
+| scroll down to see more milk | **allow**, p=0.06 |
+
+**Not yet proven:** the guard against a live Migros *checkout* screen. An
+empty basket renders two controls and `/odeme` 404s, so reaching one needs a
+logged-in session with items in it. Until that is run, the guard is verified
+against intents and against a results page, not against the page that
+actually matters.
+
 ## Sources
 
 - https://docs.typesafe.ai — API reference, primitives, models, patterns

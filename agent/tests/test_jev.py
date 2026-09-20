@@ -520,9 +520,46 @@ def test_decide():
     check("and never as an action", m.index is None and not m.verdict.act)
 
     check("operations are all executable",
-          set(fast.OPERATIONS) == {"click", "type", "select", "scroll_down",
-                                   "scroll_up", "wait", "done", "blocked"},
+          set(fast.OPERATIONS) == {"click", "type", "select", "submit",
+                                   "scroll_down", "scroll_up", "wait",
+                                   "done", "blocked"},
           str(sorted(fast.OPERATIONS)))
+    check("every operation has a gate",
+          set(fast.OP_GATE) == set(fast.OPERATIONS),
+          str(set(fast.OPERATIONS) ^ set(fast.OP_GATE)))
+
+    # Gated by what being wrong costs. Acting on a control, and submit --
+    # which presses Enter and can send a form -- stay strict; observations
+    # about where the task is do not.
+    for op in ("click", "type", "select", "submit"):
+        check(f"{op} held to the full gate", fast.OP_GATE[op] >= fast.CONFIDENT,
+              str(fast.OP_GATE[op]))
+    for op in ("done", "wait", "scroll_down", "blocked"):
+        check(f"{op} is not", fast.OP_GATE[op] < fast.CONFIDENT,
+              str(fast.OP_GATE[op]))
+
+    # The migros.com.tr run reached the results page and ranked done at 0.74.
+    # A flat 0.80 turned a finished task into "blocked".
+    c, _ = wired(ok({"op": choice_ans({"done": 0.74, "type": 0.13,
+                                       "submit": 0.07, "scroll_down": 0.06},
+                                      0.74),
+                     "pick": choice_ans({"none": 0.9}, 0.9),
+                     "blocker": choice_ans({"nothing": 0.93}, 0.93),
+                     "commit": {"type": "noul", "noul": 0.01}}))
+    m = fast.decide("search for milk and show the products", ROWS, client=c)
+    check("a finished task reads as done, not blocked", m.operation == "done",
+          m.line())
+
+    # The same confidence on a click does not get through.
+    c, _ = wired(ok({"op": choice_ans({"click": 0.74, "wait": 0.26}, 0.74),
+                     "pick": choice_ans({"0": 0.95, "none": 0.05}, 0.95),
+                     "blocker": choice_ans({"nothing": 0.9}, 0.9),
+                     "commit": {"type": "noul", "noul": 0.01}}))
+    m = fast.decide("find the morning departures", ROWS, client=c)
+    check("the same confidence on a click is refused",
+          m.operation == "blocked" and m.index is None, m.line())
+    check("and names the operation it refused", "click" in m.verdict.why,
+          m.verdict.why)
 
 
 def test_backends():

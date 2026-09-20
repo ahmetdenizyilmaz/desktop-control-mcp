@@ -95,6 +95,20 @@ COMMIT_CONTEXT = ("checkout", "payment", "ödeme", "odeme", "sepet", "basket",
                   "cart", "billing", "3d secure", "3dsecure", "secure.",
                   "bank", "banka", "kart", "card details")
 
+#: Confidence an operation needs, by what it costs to be wrong about.
+#:
+#: The three that act on a control, and `submit` — which presses Enter and
+#: can therefore send a form — are held to the full gate. The rest are
+#: observations about where the task is, and being wrong about one costs a
+#: wasted 344ms or an early hand-back to Claude, so a strict gate on them
+#: only throws away usable answers.
+OP_GATE: dict[str, float] = {
+    "click": CONFIDENT, "type": CONFIDENT, "select": CONFIDENT,
+    "submit": CONFIDENT,
+    "scroll_down": 0.50, "scroll_up": 0.50, "wait": 0.50,
+    "done": 0.60, "blocked": 0.50,
+}
+
 #: How many controls to put in the state. The full table is capped at 100 by
 #: `find_controls` already; 60 keeps a decision near 2k tokens (~$0.00008).
 MAX_ROWS = 60
@@ -159,6 +173,12 @@ def rows_to_state(rows: Sequence[Mapping[str, Any]], *,
                                "n": r.get("name") or ""}
         if r.get("id"):
             row["id"] = r["id"]
+        # What a field already contains. Without this the model cannot tell a
+        # box it has just filled from an empty one, and a search loop types
+        # the same word into the same field forever — which is exactly what
+        # the first live run on migros.com.tr did, eight times.
+        if r.get("value"):
+            row["v"] = str(r["value"])[:40]
         if r.get("hint"):
             row["hint"] = r["hint"]
         out.append(row)
@@ -324,9 +344,22 @@ def q_blocker(rows_hint: str = "") -> jev.Choice:
 #: the model picks from what `actuator` can do, so an answer is always
 #: executable and "unsupported action" cannot happen.
 OPERATIONS: dict[str, str] = {
-    "click": "Press the chosen control",
-    "type": "Put text into the chosen field (the text itself is written "
-            "elsewhere — this only decides that typing is what is needed)",
+    "click": "Press the chosen control to make something happen — a button, "
+             "a menu item, a link, a checkbox. Not for entering text.",
+    # Measured: without the second sentence, a search box splits the operation
+    # head between click and type at ~0.73 and the whole decision is held.
+    # It is a fair reading of an ambiguous question — you do click a search
+    # field before typing in it — so the question had to say which wins.
+    "type": "Put text into the chosen field. Choose this for any text entry, "
+            "including when the field must be focused first — focusing is "
+            "part of typing, not a separate click. The text itself is "
+            "written elsewhere; this only decides that typing is needed.",
+    # Typing into a search box achieves nothing until something submits it.
+    # Without this operation the loop fills the field and has no move left
+    # that makes the page change, so it fills it again.
+    "submit": "Confirm what is already typed — press Enter to run the search "
+              "or send the form. Choose this when the field already holds "
+              "the right text.",
     "select": "Choose a value from the chosen dropdown or list",
     "scroll_down": "The thing needed is below the visible area",
     "scroll_up": "The thing needed is above the visible area",
@@ -439,10 +472,25 @@ def decide(intent: str, rows: Sequence[Mapping[str, Any]], *,
     except jev.JevError as e:
         return Move("blocked", None, Verdict(False, f"no decision: {e}"))
 
-    op_v = _gate(d, "op", at)
-    if not op_v.act:
-        return Move("blocked", None, op_v)
-    operation = getattr(op_v.answer, "choice", "blocked")
+    # The operation head is gated by what the operation *costs to get wrong*,
+    # not by one flat number. A mistaken click acts on the world; a mistaken
+    # `done` stops and asks Claude, which is exactly what blocking does — so
+    # holding `done` to a click's standard buys nothing and loses the answer.
+    #
+    # Measured: the migros.com.tr run reached the results page, ranked `done`
+    # top at 0.74, and a flat 0.80 gate turned a completed task into
+    # "blocked". `submit` stays strict because pressing Enter can send a form.
+    a_op = d.answers.get("op")
+    if not d.real or not isinstance(a_op, jev.ChoiceAnswer):
+        return Move("blocked", None,
+                    _gate(d, "op", at))
+    operation = a_op.choice
+    need = OP_GATE.get(operation, at)
+    if a_op.confidence < need:
+        return Move("blocked", None,
+                    Verdict(False, f"op confidence {a_op.confidence:.2f} "
+                                   f"< {need:.2f} for {operation!r}", a_op, d))
+    op_v = Verdict(True, f"op confidence {a_op.confidence:.2f}", a_op, d)
 
     blk = d.answers.get("blocker")
     blocker = getattr(blk, "choice", "") if blk else ""
