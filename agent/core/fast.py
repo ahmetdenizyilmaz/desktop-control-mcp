@@ -171,14 +171,52 @@ def rows_to_state(rows: Sequence[Mapping[str, Any]], *,
 
 
 def elements_to_rows(elements: Iterable[Any]) -> list[dict]:
-    """`locator.Element` objects -> plain rows. Keeps `fast` importable, and
-    testable, on a machine with no UI Automation."""
+    """`locator.Element` objects -> plain rows.
+
+    Note `control_type`, not `control`: on an Element, `control` is the live
+    UIA handle the actuator invokes, and `control_type` is the string we want
+    to show the model. Getting those two confused sends a row whose type is
+    the repr of a COM object.
+    """
     rows = []
     for e in elements:
-        rows.append({"type": getattr(e, "control", "") or getattr(e, "ctype", ""),
+        rows.append({"type": getattr(e, "control_type", "") or "",
                      "name": getattr(e, "name", "") or "",
                      "id": getattr(e, "automation_id", "") or ""})
     return rows
+
+
+def window_candidates(hwnd: int, cap: int = MAX_ROWS
+                      ) -> tuple[list[dict], list[Any]]:
+    """Everything nameable in a window, as rows and Elements in lock step.
+
+    The pairing is the whole point: the model answers with a row index, and
+    `elements[i]` is the live UIA handle that index means. The model never
+    sees a coordinate and never returns one, so the project's first rule —
+    a pixel position never crosses a turn boundary — still holds even though
+    a remote model is now choosing the target.
+
+    Imported lazily so `fast` stays importable, and its tests runnable, on a
+    machine with no UI Automation.
+    """
+    from . import locator
+
+    try:
+        root = locator.uia_root(hwnd)
+    except Exception:
+        return [], []
+
+    els: list[Any] = []
+    for ch in locator.walk(root, max_depth=40, max_nodes=2500, budget_s=4.0):
+        if locator._rect_of(ch) is None:
+            continue
+        el = locator._to_element(ch, "uia:jev", hwnd)
+        if el is None or not (el.name or "").strip():
+            continue
+        els.append(el)
+        if len(els) >= cap:
+            break
+    return elements_to_rows(els), els
 
 
 def fingerprint(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -446,6 +484,55 @@ def decide(intent: str, rows: Sequence[Mapping[str, Any]], *,
                         blocker)
 
     return Move(operation, i, pick_v, blocker)
+
+
+def available() -> bool:
+    """Is there a usable key? Call sites check this before doing any work.
+
+    Without it, a repair attempt on a machine with no key would build a
+    control table, hit the offline stub, and be refused — correct, but a
+    wasted UIA walk on every failed step.
+    """
+    return not jev.client().offline
+
+
+def repair(intent: str, hwnd: int, *, window: str = "",
+           at: float = CONFIDENT, client: jev.Client | None = None
+           ) -> tuple[Any | None, Verdict]:
+    """"The locator stack failed. Is the control still here under another name?"
+
+    This is the rung `replay._alternate` was missing. The existing tier looks
+    the *same name* up via OCR, which fixes a control that draws its label
+    instead of publishing it — but not a button that was renamed, moved into
+    a menu, or replaced by one that means the same thing. That is the failure
+    a human fixes in a second by looking, and it is exactly a bounded choice
+    over what is on screen.
+
+    Returns the live Element, or None with a Verdict saying why not. The
+    commit guard applies: a repair that lands on a pay button is not a
+    repair, it is an accident, and it goes back to Claude.
+    """
+    rows, els = window_candidates(hwnd)
+    if not rows:
+        return None, Verdict(False, "nothing nameable in the window")
+
+    i, v = pick(intent, rows, window=window, at=at,
+                also={"commit": q_commit(intent)}, client=client)
+    if i is None:
+        return None, v
+
+    if v.decision is not None:
+        g = v.decision.answers.get("commit")
+        if isinstance(g, jev.NoulAnswer) and g.p >= COMMIT_STOP:
+            return None, Verdict(False, f"repair lands on something "
+                                        f"irreversible (p={g.p:.2f})", g,
+                                 v.decision)
+    word = code_side_commit(intent, window=window, target=rows[i])
+    if word:
+        return None, Verdict(False, f"repair lands on {word!r} — not automatic",
+                             v.answer, v.decision)
+
+    return els[i], v
 
 
 def code_side_commit(intent: str, *, window: str = "",

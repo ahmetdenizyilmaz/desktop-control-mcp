@@ -259,13 +259,49 @@ class Replayer:
         out.error = out.error or "no locator resolved and no alternative found"
         return out
 
+    def _ask_system_one(self, step: Step, scope: int):
+        """Last rung before waking Claude: ask a decision model which control
+        satisfies the step's intent.
+
+        The OCR tier above fixes a control that *draws* its label instead of
+        publishing it. It cannot fix a button that was renamed, moved into a
+        menu, or replaced by one that means the same thing — and that is the
+        common way an application drifts. A human repairs it in a second by
+        looking at the screen; this is that, as a bounded choice over the
+        control table, at ~344ms against the several seconds a Claude turn
+        costs.
+
+        Silent and free when no key is configured: `fast.available()` is
+        checked before any UIA walk happens, so a machine without one pays
+        nothing on every failed step. Any failure here returns None and the
+        ladder carries on to rung 4/5 exactly as before — this tier can only
+        add recoveries, never remove one.
+        """
+        try:
+            from . import fast
+        except Exception:
+            return None
+        if not fast.available():
+            return None
+        try:
+            el, verdict = fast.repair(step.intent, scope,
+                                      window=str(step.args.get("window") or ""))
+        except Exception as e:
+            self._emit("improvise", rung="system-one", ok=False, error=str(e))
+            return None
+        self._emit("improvise", rung="system-one", ok=el is not None,
+                   why=verdict.why)
+        return el
+
     def _alternate(self, step: Step, scope, params):
         """Try to satisfy the step's INTENT by another means.
 
-        Currently: if the step names a target, look it up by drawn label via
-        the OCR tier, which addresses controls that publish no name at all.
-        This is the rung that turns 'the button moved' into a recovery rather
-        than a failure.
+        Two tiers, cheapest first: look the target's name up by drawn label
+        via OCR, which addresses controls that publish no name at all; then,
+        if a key is configured, ask a System-1 model which control on screen
+        satisfies the intent, which addresses the control that was renamed or
+        moved. This is the rung that turns 'the button moved' into a recovery
+        rather than a failure.
         """
         if scope is None:
             scope = locator.foreground_window()
@@ -278,13 +314,19 @@ class Replayer:
             wanted = v.get("name") or v.get("text") or v.get("id") or ""
             if wanted:
                 break
-        if not wanted:
-            return None
+        # The OCR tier needs a name to look up. The System-1 tier works from
+        # the step's intent and does not, so a step whose locators carry no
+        # name still gets a shot at the rung below instead of going straight
+        # to Claude.
+        el = None
+        if wanted:
+            try:
+                el = locator.find_labelled(scope, wanted)
+            except Exception:
+                el = None
 
-        try:
-            el = locator.find_labelled(scope, wanted)
-        except Exception:
-            el = None
+        if el is None:
+            el = self._ask_system_one(step, scope)
         if el is None:
             return None
 
