@@ -105,6 +105,16 @@ STATE_TOKEN_BUDGET = 32_000
 #: Retried with backoff; anything else is surfaced immediately.
 RETRY_STATUS = (429, 500, 502, 503, 504, 529)
 
+#: How long an idle connection is held open. httpx defaults to 5s, which is
+#: shorter than the gap between two steps of a task, so the default would put
+#: a TLS handshake in front of most decisions.
+#:
+#: Measured from this machine via OpenRouter, 30 calls: the handshake costs
+#: **1156ms against a warm 344ms** — the cold call is 3.4x the warm one, and
+#: was the entire reason an early sample showed a 1.4s p95. Holding the
+#: connection is the single cheapest latency win available here.
+KEEPALIVE_S = 90.0
+
 #: Where each backend keeps its credential, its default endpoint and its
 #: default model id. Kept as data so adding the Vercel or Netlify gateway
 #: later is a row, not a branch.
@@ -431,7 +441,8 @@ class Client:
             self._client = httpx.Client(
                 timeout=self.timeout,
                 limits=httpx.Limits(max_keepalive_connections=8,
-                                    max_connections=16))
+                                    max_connections=16,
+                                    keepalive_expiry=KEEPALIVE_S))
         return self._client
 
     def _ahttp(self):
@@ -442,6 +453,27 @@ class Client:
                 limits=httpx.Limits(max_keepalive_connections=8,
                                     max_connections=16))
         return self._aclient
+
+    def prewarm(self) -> float:
+        """Pay the TLS handshake before the user is waiting on it.
+
+        Measured here: a cold call is 1156ms against a warm 344ms. Call this
+        when a task starts, not when the first decision is needed, and the
+        first decision costs what every other one costs.
+
+        Sends the smallest legal request — one short noul, ~30 tokens, about
+        $0.000001. Returns the seconds it took, or 0.0 if offline or it
+        failed; a failure here is not worth interrupting a task for, since
+        the next real call will report it properly.
+        """
+        if self.offline:
+            return 0.0
+        t0 = time.monotonic()
+        try:
+            self.ask("ready", {"_warm": Noul("Is this text non-empty?")})
+        except Exception:
+            return 0.0
+        return time.monotonic() - t0
 
     def close(self) -> None:
         if self._client is not None:

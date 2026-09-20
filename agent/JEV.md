@@ -256,8 +256,7 @@ which Jev does not do.
   nothing else. For an agent that writes `lessons.json` from its own failures
   that is a real loss. Journal state + probabilities and let Claude diagnose
   the low-confidence ones after the fact.
-- **Network RTT from Turkey** is on top of 70–500 ms and unmeasured.
-  `Client.stats.report()` prints p50/p95 once a key exists.
+- ~~Network RTT from Turkey is unmeasured~~ — **measured, see §10.**
 - **A vendor in the inner loop.** Every gate degrades to "escalate to Claude"
   on failure, so an outage makes the agent slow, not wrong. Keep it that way.
 
@@ -274,6 +273,50 @@ managing those files. That is why `tests/run_all.py` was left alone. On merge:
 ```
 
 Committing `agent/` is worth doing soon, independently of any of this.
+
+## 10. Measured, 2026-09-20
+
+Live against Jev through OpenRouter (`jev-1.13`, answered by
+`typesafe/jev-1.13-20260917`), from this machine, 30 calls, 0 failures.
+State was a 5-row control table with 3 questions — the shape `fast.decide()`
+actually sends.
+
+| | |
+|---|---|
+| **cold call** (TLS handshake) | **1156 ms** |
+| **warm p50** | **344 ms** |
+| warm p95 | 453 ms |
+| warm range | 281–469 ms, no long tail |
+| per decision | 687 input tokens, **$0.000029** |
+| 30 calls total | $0.0009 |
+
+Connect time to each provider from here, to settle where the latency lives:
+
+| | TCP | TLS | total |
+|---|---|---|---|
+| openrouter.ai | 55 ms | 77 ms | **132 ms** |
+| api.cloudflare.com | 65 ms | 76 ms | 141 ms |
+| api.typesafe.ai | 276 ms | 270 ms | **546 ms** |
+
+**The gateway is not the cost.** OpenRouter is a quarter of the round trip to
+TypeSafe's own API from Turkey, so direct access once the waitlist clears
+would be *slower*, not faster. 344 ms is what a decision costs at this
+distance — still ~30× quicker than the Claude turn it replaces.
+
+Two changes followed from this:
+
+- **`Pilot.DEFAULT_HZ = 2.0`**, down from 4. A 5 Hz loop needs a 200 ms
+  budget and cannot have one; 2 Hz leaves the p95 room, ~2.9 Hz is the
+  ceiling.
+- **`KEEPALIVE_S = 90`** and `Client.prewarm()`. httpx holds idle connections
+  for 5 s by default — shorter than the gap between two steps of a task, so
+  the default would have put a 1156 ms handshake in front of most decisions.
+  The cold call was also the entire reason an early 8-call sample showed a
+  1.4 s p95.
+
+Correctness spot-check, not just well-formedness: given a table containing
+"Sort by price" and a "Loading results…" label, it picked index 3 at
+confidence **1.00** and put the loading noul at **0.95**.
 
 ## Sources
 

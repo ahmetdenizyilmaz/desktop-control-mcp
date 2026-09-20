@@ -598,9 +598,19 @@ class Pilot:
     page cannot.
     """
 
+    #: Measured, not guessed. From this machine via OpenRouter, 30 calls:
+    #: warm p50 344ms, p95 453ms, range 281-469ms with no long tail. A 5Hz
+    #: loop needs a 200ms budget and cannot have it; 2Hz leaves the p95 with
+    #: room to spare, and ~2.9Hz is the hard ceiling. The connect time says
+    #: this is not the gateway's fault — OpenRouter is 132ms from here
+    #: against TypeSafe's own 546ms, so direct access would be slower, not
+    #: faster. 344ms is simply what a decision costs at this distance, and it
+    #: is still ~30x quicker than the Claude turn it replaces.
+    DEFAULT_HZ = 2.0
+
     def __init__(self, sense: Callable[[], list[dict]],
                  act: Callable[[int], bool], *,
-                 hz: float = 4.0, client: jev.Client | None = None,
+                 hz: float = DEFAULT_HZ, client: jev.Client | None = None,
                  guard: bool = True, window: str = "") -> None:
         self.sense = sense
         self.act = act
