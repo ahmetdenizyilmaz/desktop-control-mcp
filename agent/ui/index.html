@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGI Agent</title>
+<style>
+:root{
+  --bg:#0d141f; --panel:#141d2b; --panel2:#1b2635; --line:#26344a;
+  --ink:#e3eaf5; --ink2:#9fb0c8; --ink3:#6d7f99;
+  --accent:#5b8dff; --good:#4ec98d; --warn:#e0a94a; --crit:#f0796e;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  --sans:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px}
+header{display:flex;align-items:center;gap:16px;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:-.01em}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ink3)}
+.dot.on{background:var(--good)}
+.dot.warn{background:var(--warn)}
+.spacer{flex:1}
+.meta{font-family:var(--mono);font-size:12px;color:var(--ink3)}
+main{display:grid;grid-template-columns:340px 1fr;gap:0;height:calc(100vh - 53px)}
+aside{border-right:1px solid var(--line);background:var(--panel);overflow-y:auto;padding:16px}
+section{padding:18px 22px;overflow-y:auto}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3);margin:0 0 10px;font-weight:650}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:13px 15px;margin-bottom:10px}
+.card h3{margin:0 0 4px;font-size:14px;font-weight:600}
+.card p{margin:0;color:var(--ink2);font-size:12.5px;line-height:1.45}
+.row{display:flex;align-items:center;gap:8px}
+button{font-family:var(--sans);font-size:13px;font-weight:550;border:1px solid var(--line);
+  background:var(--panel2);color:var(--ink);padding:7px 13px;border-radius:7px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#08101f}
+button.danger{border-color:var(--crit);color:var(--crit)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.pill{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:4px;text-transform:uppercase;letter-spacing:.04em}
+.p-draft{background:#2a3446;color:var(--ink3)}
+.p-supervised{background:#3a2f16;color:var(--warn)}
+.p-trusted{background:#123726;color:var(--good)}
+.p-quarantined{background:#3a1a17;color:var(--crit)}
+#log{font-family:var(--mono);font-size:11.5px;line-height:1.6;background:#0a1018;
+  border:1px solid var(--line);border-radius:9px;padding:12px;height:280px;overflow-y:auto;white-space:pre-wrap}
+.k{color:var(--accent)}.g{color:var(--good)}.w{color:var(--warn)}.e{color:var(--crit)}.d{color:var(--ink3)}
+.stat{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;padding:3px 0;color:var(--ink2)}
+.stat b{color:var(--ink);font-weight:600}
+input,textarea{width:100%;background:#0a1018;border:1px solid var(--line);border-radius:7px;
+  color:var(--ink);padding:8px 10px;font-family:var(--sans);font-size:13px}
+.empty{color:var(--ink3);font-size:13px;padding:18px;text-align:center;border:1px dashed var(--line);border-radius:9px}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>AGI Agent</h1>
+  <span class="meta" id="machine">connecting…</span>
+  <span class="spacer"></span>
+  <span class="meta" id="control">control: —</span>
+  <button id="btnAcquire">Take control</button>
+  <button id="btnRelease">Release</button>
+</header>
+
+<main>
+  <aside>
+    <h2>Record</h2>
+    <div class="card">
+      <div class="row">
+        <button class="primary" id="btnRec">Start recording</button>
+        <button class="danger" id="btnRecStop" disabled>Stop</button>
+      </div>
+      <p style="margin-top:9px" id="recStatus">Demonstrate a task; every click is
+        resolved to an element as you make it, so the recording stores identity
+        rather than coordinates.</p>
+    </div>
+
+    <h2>Machine</h2>
+    <div class="card" id="machineCard"><p>…</p></div>
+
+    <h2>Quick action</h2>
+    <div class="card">
+      <input id="qName" placeholder="control name, e.g. Save">
+      <div style="height:7px"></div>
+      <input id="qWindow" placeholder="window title (optional)">
+      <div style="height:9px"></div>
+      <div class="row">
+        <button id="btnClick">Click it</button>
+        <button id="btnInspect">Inspect window</button>
+      </div>
+    </div>
+  </aside>
+
+  <section>
+    <h2>Macros</h2>
+    <div id="macros"></div>
+
+    <h2 style="margin-top:22px">Activity</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const TOKEN = qs.get("token") || localStorage.getItem("agentToken") || "";
+if (TOKEN) localStorage.setItem("agentToken", TOKEN);
+
+async function api(path, opts={}) {
+  const r = await fetch("/api" + path, {
+    ...opts,
+    headers: {"Content-Type":"application/json", "X-Token": TOKEN, ...(opts.headers||{})}
+  });
+  if (!r.ok) { const t = await r.text(); throw new Error(r.status + " " + t.slice(0,120)); }
+  return r.json();
+}
+
+const logEl = document.getElementById("log");
+function log(msg, cls="") {
+  const t = new Date().toLocaleTimeString();
+  logEl.innerHTML += `<span class="d">${t}</span>  <span class="${cls}">${msg}</span>\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+let lastEvent = 0;
+
+async function refresh() {
+  try {
+    const s = await api("/status");
+    document.getElementById("dot").className = "dot " + (s.locked ? "warn" : "on");
+    document.getElementById("machine").textContent =
+      `${s.screen.w}x${s.screen.h} @${s.screen.dpi_scale}x · ${s.capabilities.length} apps`;
+    const ctl = s.arbiter ? s.arbiter.control : "idle";
+    document.getElementById("control").textContent = "control: " + ctl;
+    document.getElementById("machineCard").innerHTML =
+      `<div class="stat"><span>screen</span><b>${s.screen.w}×${s.screen.h}</b></div>
+       <div class="stat"><span>dpi scale</span><b>${s.screen.dpi_scale}×</b></div>
+       <div class="stat"><span>locked</span><b>${s.locked ? "yes" : "no"}</b></div>
+       <div class="stat"><span>macros</span><b>${s.macros}</b></div>
+       <div class="stat"><span>apps found</span><b>${s.capabilities.length}</b></div>`;
+    document.getElementById("btnRecStop").disabled = !s.recording;
+    document.getElementById("btnRec").disabled = !!s.recording;
+  } catch (e) { log("status: " + e.message, "e"); }
+
+  try {
+    const {macros} = await api("/macros");
+    const box = document.getElementById("macros");
+    if (!macros.length) {
+      box.innerHTML = `<div class="empty">No macros yet. Record a task, or let Claude
+        author one while it works — every successful action becomes a step.</div>`;
+    } else {
+      box.innerHTML = macros.map(m => `
+        <div class="card">
+          <div class="row">
+            <h3>${m.name}</h3><span class="spacer"></span>
+            <span class="pill p-${m.trust}">${m.trust}</span>
+          </div>
+          <p>${m.description}</p>
+          <div class="stat"><span>${m.steps} steps · ${m.runs} runs</span>
+            <b>${(m.success_rate*100).toFixed(0)}% ok</b></div>
+          <div class="row" style="margin-top:9px">
+            <button onclick="runMacro('${m.id}')">Run</button>
+            <button onclick="exportMacro('${m.id}')">Export</button>
+          </div>
+        </div>`).join("");
+    }
+  } catch (e) {}
+
+  try {
+    const {events, now} = await api("/events?since=" + lastEvent);
+    lastEvent = now;
+    for (const e of events) {
+      const cls = e.kind.includes("end") ? "g" : e.kind.includes("fail") ? "e" : "k";
+      log(e.kind + " " + JSON.stringify(Object.fromEntries(
+        Object.entries(e).filter(([k]) => !["t","kind"].includes(k)))).slice(0,140), cls);
+    }
+  } catch (e) {}
+}
+
+async function runMacro(id) {
+  log("running " + id + " …", "k");
+  try {
+    const r = await api(`/macros/${id}/run`, {method:"POST", body:"{}"});
+    log(r.report, r.ok ? "g" : "e");
+    if (r.needs_user) log("needs you: " + r.needs_user, "w");
+  } catch (e) { log("run failed: " + e.message, "e"); }
+  refresh();
+}
+
+async function exportMacro(id) {
+  const m = await api(`/macros/${id}/export`);
+  log("export " + id + " — " + JSON.stringify(m).length + " bytes (shareable half only)", "g");
+}
+
+document.getElementById("btnAcquire").onclick = async () => {
+  const r = await api("/control/acquire", {method:"POST"});
+  log("control " + (r.ok ? "acquired" : "denied: " + JSON.stringify(r.status.detail)),
+      r.ok ? "g" : "w");
+  refresh();
+};
+document.getElementById("btnRelease").onclick = async () => {
+  await api("/control/release", {method:"POST"}); log("control released", "d"); refresh();
+};
+document.getElementById("btnRec").onclick = async () => {
+  const r = await api("/record/start", {method:"POST"});
+  log("recording → " + r.dir, "g"); refresh();
+};
+document.getElementById("btnRecStop").onclick = async () => {
+  const r = await api("/record/stop", {method:"POST"});
+  log(`recorded ${r.meta.events} events, kept ${r.meta.frames_kept} frames `
+      + `over ${r.meta.duration_s}s`, "g");
+  log("windows touched: " + (r.summary.windows_touched.join(", ") || "—"), "d");
+  refresh();
+};
+document.getElementById("btnClick").onclick = async () => {
+  const name = document.getElementById("qName").value.trim();
+  const win = document.getElementById("qWindow").value.trim();
+  if (!name) return;
+  try {
+    const r = await api("/act/click", {method:"POST",
+      body: JSON.stringify({name, window: win || null})});
+    log(`click "${name}" → ${r.ok ? r.method : "FAILED: " + r.error}`, r.ok ? "g" : "e");
+  } catch (e) { log("click: " + e.message, "e"); }
+};
+document.getElementById("btnInspect").onclick = async () => {
+  const win = document.getElementById("qWindow").value.trim();
+  const r = await api("/inspect" + (win ? "?window=" + encodeURIComponent(win) : ""));
+  log(`${r.window} — ${r.count} elements, ${r.diagnosis.reason}`, "k");
+  r.elements.slice(0,12).forEach(e =>
+    log(`   ${e.type.padEnd(18)} ${(e.name||"—").slice(0,26).padEnd(28)} ${e.rect}`, "d"));
+};
+
+refresh();
+setInterval(refresh, 2500);
+</script>
+</body>
+</html>

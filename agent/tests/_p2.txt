@@ -1,0 +1,10 @@
+==========================================================================
+PHASE 02 ACCEPTANCE — arbiter
+==========================================================================
+
+1. shared input hook
+  [PASS] hook starts
+  [PASS] observes injected keystrokes  — 2 key events
+  [PASS] marks our own input as INJECTED  — an agent must never be mistaken for the user
+
+2. the kill switch cannot be pressed by the agent

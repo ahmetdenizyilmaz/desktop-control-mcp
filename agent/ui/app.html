@@ -1,0 +1,812 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AGI Agent</title>
+<!-- The 32px frame of assets/icon.ico, inlined so the page needs no second
+     file. Regenerate with assets/make_icon.py. -->
+<link rel="icon" type="image/png" href="data:image/png;base64,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">
+<style>
+:root{
+  --bg:#0d141f; --panel:#141d2b; --panel2:#1a2434; --line:#26344a;
+  --ink:#e6edf7; --ink2:#9db0c9; --ink3:#66788f;
+  --accent:#5b8dff; --good:#4ec98d; --warn:#e0a94a; --crit:#f0796e;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  --sans:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;
+  display:flex;flex-direction:column;overflow:hidden}
+
+header{display:flex;align-items:center;gap:14px;padding:13px 20px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto}
+header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:-.01em}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ink3);flex:0 0 auto}
+.dot.busy{background:var(--warn);animation:pulse 1.1s infinite}
+.dot.on{background:var(--good)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.spacer{flex:1}
+.meta{font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+.tokens{margin-right:12px;color:var(--ink2)}
+.tokens b{color:var(--accent);font-weight:600}
+.model{font-size:10.5px;color:var(--ink3);letter-spacing:.01em}
+.tab{padding:5px 11px;border-radius:7px;cursor:pointer;color:var(--ink2);font-size:13px}
+.tab.sel{background:var(--panel2);color:var(--ink)}
+
+main{flex:1;display:flex;min-height:0}
+.pane{flex:1;display:none;flex-direction:column;min-height:0}
+.pane.sel{display:flex}
+
+/* task pane */
+#feed{flex:1;overflow-y:auto;padding:20px 26px}
+.msg{margin-bottom:13px;max-width:840px}
+.msg .who{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--ink3);margin-bottom:3px;font-weight:650}
+.msg .body{line-height:1.55;white-space:pre-wrap}
+.msg.claude .body{color:var(--ink)}
+.msg.action{font-family:var(--mono);font-size:12px;color:var(--accent);
+  background:#101a2b;border-left:2px solid var(--accent);padding:5px 11px;border-radius:0 6px 6px 0}
+.msg.system .body{color:var(--ink3);font-size:13px}
+.msg.result .body{color:var(--good)}
+.msg.error .body{color:var(--crit)}
+.msg.job .body{font-family:var(--mono);font-size:12px;color:var(--ink2)}
+
+/* An author `display` beats the UA stylesheet's [hidden]{display:none}, so
+   without this the strip is visible with nothing in it whenever idle. */
+[hidden]{display:none !important}
+.nowbar{flex:0 0 auto;display:flex;align-items:center;gap:9px;
+  padding:7px 20px;border-top:1px solid var(--line);background:var(--panel2);
+  font-family:var(--mono);font-size:12px;color:var(--ink2)}
+.nowbar.held{background:#23201a;color:var(--warn)}
+.spin{width:8px;height:8px;border-radius:50%;background:var(--accent);
+  animation:pulse 1.1s infinite;flex:0 0 auto}
+.nowbar.held .spin{background:var(--warn);animation:none}
+.nowtool{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nowtime{font-variant-numeric:tabular-nums;color:var(--ink3)}
+.nowtime.slow{color:var(--warn)}
+
+/* A blocked task is not a log line — it stops the run, so it sits above the
+   composer where it cannot scroll out of sight. */
+.asking{flex:0 0 auto;border-top:2px solid var(--warn);background:#1c1a12;
+  padding:13px 20px}
+/* Capped and scrollable. The model's questions run long — a numbered list of
+   options is common — and this block does not shrink, so an uncapped one
+   pushed the composer, Stop included, below the bottom edge of a window that
+   cannot scroll (body is overflow:hidden). With the cap, everything under the
+   question still fits at the smallest window height the app allows. */
+.asking .q{color:var(--ink);font-size:14px;margin-bottom:10px;white-space:pre-wrap;
+  max-height:32vh;overflow-y:auto}
+.asking .qrow{display:flex;gap:8px;align-items:center}
+.asking input{flex:1;background:#0a1018;border:1px solid var(--line);border-radius:7px;
+  color:var(--ink);padding:7px 10px;font-family:var(--sans);font-size:13px}
+.asking input:focus{outline:none;border-color:var(--accent)}
+.asking .hint{margin-top:8px;color:var(--warn)}
+.msg.ask .body{color:var(--warn)}
+.composer{flex:0 0 auto;border-top:1px solid var(--line);background:var(--panel);padding:14px 20px}
+.composer textarea{width:100%;background:#0a1018;border:1px solid var(--line);
+  border-radius:9px;color:var(--ink);padding:11px 13px;font-family:var(--sans);
+  font-size:14px;resize:none;height:74px;line-height:1.45}
+.composer textarea:focus{outline:none;border-color:var(--accent)}
+.crow{display:flex;align-items:center;gap:10px;margin-top:9px}
+button{font-family:var(--sans);font-size:13px;font-weight:550;border:1px solid var(--line);
+  background:var(--panel2);color:var(--ink);padding:8px 15px;border-radius:8px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#07101f;font-weight:600}
+button.danger{border-color:var(--crit);color:var(--crit)}
+button:disabled{opacity:.4;cursor:not-allowed}
+.hint{font-size:12px;color:var(--ink3)}
+
+/* side panes */
+.body-pad{padding:20px 26px;overflow-y:auto;flex:1}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3);
+  margin:0 0 11px;font-weight:650}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;margin-bottom:11px;max-width:760px}
+.card h3{margin:0 0 5px;font-size:14px;font-weight:600}
+.card p{margin:0;color:var(--ink2);font-size:12.5px;line-height:1.5}
+.stat{display:flex;justify-content:space-between;font-family:var(--mono);
+  font-size:12px;padding:4px 0;color:var(--ink2);border-bottom:1px solid #1c2736}
+.stat:last-child{border-bottom:none}
+.stat b{color:var(--ink);font-weight:600}
+label.field{display:block;margin-bottom:14px;max-width:520px}
+label.field span{display:block;font-size:12.5px;color:var(--ink2);margin-bottom:5px}
+/* Covers text/password/search too — `input[type=number]` alone left every
+   plain text field with the browser default white box on a dark page. */
+select,input:not([type=checkbox]):not([type=radio]){width:100%;background:#0a1018;
+  border:1px solid var(--line);border-radius:7px;color:var(--ink);padding:8px 10px;
+  font-family:var(--sans);font-size:13px}
+select:focus,input:focus{outline:none;border-color:var(--accent)}
+input::placeholder{color:var(--ink3)}
+.toggle{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink2);margin-bottom:14px}
+.pill{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:4px;text-transform:uppercase}
+.p-draft{background:#2a3446;color:var(--ink3)}
+.p-supervised{background:#3a2f16;color:var(--warn)}
+.p-trusted{background:#123726;color:var(--good)}
+.empty{color:var(--ink3);font-size:13px;padding:22px;text-align:center;
+  border:1px dashed var(--line);border-radius:10px;max-width:760px}
+.examples{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.ex{font-size:12px;color:var(--ink2);background:var(--panel2);border:1px solid var(--line);
+  padding:5px 10px;border-radius:20px;cursor:pointer}
+.ex:hover{border-color:var(--accent);color:var(--ink)}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>AGI Agent</h1>
+  <span class="meta model" id="model" title="Model serving the current or last task"></span>
+  <span class="meta" id="machine"></span>
+  <span class="spacer"></span>
+  <span class="meta tokens" id="tokens" title="Tokens used by the current or last task"></span>
+  <span class="tab sel" data-pane="task">Task</span>
+  <span class="tab" data-pane="jobs">Saved jobs</span>
+  <span class="tab" data-pane="schedule">Schedule</span>
+  <span class="tab" data-pane="settings">Settings</span>
+</header>
+
+<main>
+  <!-- TASK -->
+  <div class="pane sel" id="pane-task">
+    <div id="feed">
+      <div class="empty" id="welcome">
+        Describe a task and it will be done on this computer — desktop apps,
+        the browser, or both.
+        <div class="examples">
+          <span class="ex">Open Notepad and write today's date</span>
+          <span class="ex">Search the web for the ROCm 7 release notes and summarise them</span>
+          <span class="ex">Open Excel and start a blank workbook</span>
+          <span class="ex">Show me what windows are open</span>
+        </div>
+      </div>
+    </div>
+    <!-- What is happening right now. A long step must read as working,
+         not as stuck — that ambiguity is what makes it feel broken. -->
+    <div class="nowbar" id="nowbar" hidden>
+      <span class="spin" id="spin"></span>
+      <span class="nowtool" id="nowtool"></span>
+      <span class="spacer"></span>
+      <span class="nowtime" id="nowtime"></span>
+    </div>
+
+    <!-- Shown only while a task is blocked waiting on you. -->
+    <div class="asking" id="asking" hidden>
+      <div class="q" id="qtext"></div>
+      <div class="qrow">
+        <button class="primary" id="q-approve">Approve</button>
+        <button class="danger" id="q-deny">Deny</button>
+        <input id="q-text" placeholder="…or type an answer">
+        <button id="q-send">Send</button>
+        <!-- Not answering is an answer too. The composer's Stop stays live
+             as well; this one is simply where the eye already is. -->
+        <button class="danger" id="q-stop">Stop task</button>
+      </div>
+      <div class="hint" id="q-wait"></div>
+    </div>
+
+    <div class="composer">
+      <textarea id="task" placeholder="What should it do?  (Ctrl+Enter to run)"></textarea>
+      <div class="crow">
+        <button class="primary" id="run">Run task</button>
+        <button id="pause" disabled>Pause</button>
+        <button class="danger" id="stop" disabled>Stop</button>
+        <span class="spacer"></span>
+        <span class="hint">Press <b>ESC twice</b> at any time to abort · clicking or
+          typing pauses it</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- JOBS -->
+  <div class="pane" id="pane-jobs">
+    <div class="body-pad">
+      <h2>Saved jobs</h2>
+      <p class="hint" style="margin:-4px 0 14px">
+        Work it has done before and can repeat. Optional — most tasks never need one.</p>
+      <div id="jobs"></div>
+    </div>
+  </div>
+
+  <!-- SCHEDULE -->
+  <div class="pane" id="pane-schedule">
+    <div class="body-pad">
+      <h2>Scheduled work</h2>
+      <p class="hint" style="margin:-4px 0 14px">
+        Runs only while this app is open. A Windows scheduled task can be
+        launched into a session with no desktop at all, which is useless to
+        something whose job is to drive one — so the timer lives here instead.
+        Anything due while the app was closed is reported, never run silently.</p>
+      <div id="missed"></div>
+      <div id="schedules"></div>
+      <div class="crow" style="margin-top:12px">
+        <input id="sch-task" placeholder="What should it do?" style="flex:2">
+        <input id="sch-when" placeholder="every morning at 9" style="flex:1">
+        <button id="sch-add">Schedule it</button>
+      </div>
+      <p class="hint" style="margin-top:8px">
+        Understood: <b>every morning at 9</b> · <b>weekdays at 8am</b> ·
+        <b>every 3 hours</b> · <b>monday and thursday at 7pm</b> ·
+        <b>her sabah</b> · <b>cuma 14:00</b></p>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="pane" id="pane-settings">
+    <div class="body-pad">
+      <h2>Automation</h2>
+      <label class="field">
+        <span>How much should it ask before acting?</span>
+        <select id="set-level">
+          <option value="supervised">Supervised — confirm risky steps</option>
+          <option value="auto">Fully automated — never ask</option>
+        </select>
+      </label>
+      <div class="toggle">
+        <input type="checkbox" id="set-headless">
+        <label for="set-headless">Run the browser invisibly (falls back to visible when a site blocks it)</label>
+      </div>
+      <label class="field">
+        <span>Where the model runs</span>
+        <select id="set-provider">
+          <option value="anthropic">Anthropic — your Claude subscription</option>
+          <option value="openrouter">OpenRouter — any model it offers</option>
+          <option value="gemini">Google Gemini — through the local proxy</option>
+          <option value="custom">Local / custom endpoint</option>
+        </select>
+      </label>
+      <div id="cu-box" hidden>
+        <label class="field">
+          <span>Endpoint URL — must speak the Anthropic API (<code>/v1/messages</code>).
+            Ollama and LM Studio speak OpenAI's format, so they need a
+            translating proxy in front, e.g. LiteLLM on
+            <code>http://localhost:4000</code>.</span>
+          <input id="set-baseurl" placeholder="http://localhost:4000">
+        </label>
+      </div>
+      <div id="gm-box" hidden>
+        <div class="crow" style="margin:-4px 0 12px">
+          <input id="gm-key" type="password" placeholder="Gemini API key (AIza…)" style="flex:1">
+          <button id="gm-save">Save key</button>
+        </div>
+        <p class="hint" style="margin:-6px 0 6px" id="gm-msg">
+          Get one at aistudio.google.com/apikey. Stored encrypted with your other
+          credentials, never in a settings file. The app runs the LiteLLM proxy
+          the key goes through — it starts it on this machine whenever a task
+          needs it and nothing is answering yet.</p>
+        <p class="hint" style="margin:0 0 12px" id="cu-proxy"></p>
+      </div>
+      <div id="or-box" hidden>
+        <div class="crow" style="margin:-4px 0 12px">
+          <input id="or-key" type="password" placeholder="OpenRouter API key (sk-or-…)" style="flex:1">
+          <button id="or-save">Save key</button>
+        </div>
+        <p class="hint" style="margin:-6px 0 12px" id="or-msg">
+          Stored encrypted with your other credentials, never in a settings file.
+          Claude Code is built for Anthropic models — tool use and thinking may
+          behave differently on others.</p>
+      </div>
+      <label class="field">
+        <span>Model <span class="hint" id="model-count"></span></span>
+        <select id="set-model"></select>
+      </label>
+      <label class="field">
+        <span>Backup model — used only if the one above is overloaded or
+          unavailable, so a long task degrades instead of dying part-way.</span>
+        <select id="set-fallback"></select>
+      </label>
+      <label class="field">
+        <span>Longest reply, in tokens — <b>0 uses the default (64000)</b>.
+          Pay-as-you-go providers reserve credit for this whole amount up
+          front, so a big default is refused outright on a small balance.
+          2000 is ample here: this app sends many short messages.</span>
+        <input type="number" id="set-maxout" min="0" max="128000" step="500">
+      </label>
+      <label class="field">
+        <span>Screenshot detail — what each picture costs the model. Standard
+          (~1,600 visual tokens) reads a normal page; High (~4,800) is for
+          dense small text; Low (~1,000) for cheap trials. Clicks never
+          depend on this: coordinates are scaled by the picture's shown size.</span>
+        <select id="set-shotdetail">
+          <option value="low">Low — cheapest</option>
+          <option value="standard">Standard</option>
+          <option value="high">High — sharpest</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Maximum steps per task — <b>0 means no limit</b>. A long task is
+          not a stuck one; the stall check below is what catches stuck work.</span>
+        <input type="number" id="set-turns" min="0" max="2000">
+      </label>
+
+      <h2>Keep going when stuck</h2>
+      <label class="field">
+        <span>Check progress every (minutes)</span>
+        <input type="number" id="set-wd" min="1" max="600">
+      </label>
+      <label class="field">
+        <span>Treat as stalled after (minutes of no progress)</span>
+        <input type="number" id="set-stall" min="1" max="120">
+      </label>
+
+      <h2>Logins</h2>
+      <p class="hint" style="margin:-4px 0 12px">
+        Stored encrypted by Windows, tied to your account on this PC. A task
+        types them straight into the page — the value is never shown to Claude,
+        so it cannot end up in a transcript. Saved jobs store only the name.</p>
+      <div id="creds"></div>
+      <div class="crow" style="margin-top:10px">
+        <input id="cred-name" placeholder="name, e.g. gmail-password" style="flex:1">
+        <input id="cred-value" type="password" placeholder="value" style="flex:1">
+        <button id="cred-add">Save login</button>
+      </div>
+
+      <h2>Reaching you when you're away</h2>
+      <p class="hint" style="margin:-4px 0 12px">
+        If a task needs a decision while you're not at the PC, it can ask you on
+        Telegram. A bot can't message you first, so you have to open its link
+        once and press Start — that's the pairing step.</p>
+      <div class="card" id="chanCard"></div>
+      <div class="crow" style="margin-top:10px">
+        <input id="tg-token" placeholder="Bot token from @BotFather" style="flex:1">
+        <button id="tg-save">Save token</button>
+      </div>
+      <div class="crow" style="margin-top:8px">
+        <button id="tg-pair">Pair with Telegram</button>
+        <button id="tg-test">Send test message</button>
+      </div>
+      <div class="hint" id="tg-msg" style="margin-top:8px"></div>
+
+      <h2>This machine</h2>
+      <div class="card" id="machineCard"></div>
+      <button id="save">Save settings</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const api = () => window.pywebview.api;
+let lastFeed = 0;
+
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("sel"));
+  document.querySelectorAll(".pane").forEach(x => x.classList.remove("sel"));
+  t.classList.add("sel");
+  document.getElementById("pane-" + t.dataset.pane).classList.add("sel");
+});
+
+document.querySelectorAll(".ex").forEach(e => e.onclick = () => {
+  document.getElementById("task").value = e.textContent.trim();
+  document.getElementById("task").focus();
+});
+
+function render(state) {
+  document.getElementById("dot").className =
+    "dot " + (state.running ? "busy" : "on");
+  document.getElementById("machine").textContent =
+    `${state.machine.screen} @${state.machine.dpi}x · ${state.machine.apps.length} apps`
+    + (state.browser.running ? ` · browser ${state.browser.headless ? "hidden" : "visible"}` : "");
+
+  document.getElementById("run").disabled = state.running;
+  document.getElementById("stop").disabled = !state.running;
+  const pb = document.getElementById("pause");
+  pb.disabled = !state.running;
+  pb.textContent = state.paused ? "Resume" : "Pause";
+  pb.className = state.paused ? "primary" : "";
+
+  // Live status: which tool, for how long, and whether it is held.
+  const bar = document.getElementById("nowbar");
+  if (state.running) {
+    bar.hidden = false;
+    bar.className = "nowbar" + (state.paused ? " held" : "");
+    const c = state.current;
+    document.getElementById("nowtool").textContent =
+      state.paused ? "Paused — nothing is being touched"
+      : c ? `${c.tool}(${c.detail})`
+      : "thinking…";
+    const secs = c && !state.paused
+      ? Math.round(Date.now()/1000 - c.since) : 0;
+    const el = document.getElementById("nowtime");
+    const u = state.usage || {};
+    const tokBit = u.total
+      ? ` · ${fmtTok(u.total)} tok` + (u.shots ? ` · ${u.shots} shots` : "") + costBit(u)
+      : "";
+    el.textContent = (c && !state.paused
+      ? `${secs}s · ${fmt(state.elapsed)} total` : fmt(state.elapsed) + " total") + tokBit;
+    el.className = "nowtime" + (secs > 20 ? " slow" : "");
+  } else if (!bar.hidden) {
+    bar.hidden = true;
+  }
+
+  // Token usage for the current (live) or last-finished task, in the header.
+  // While the task runs the price is an estimate from a learned rate (~), and
+  // it is replaced by the exact figure the moment the task reports one.
+  const u = state.usage || {};
+  const tk = document.getElementById("tokens");
+  if (u.total) {
+    tk.innerHTML = `<b>${fmtTok(u.total)}</b> tokens`
+      + (u.shots ? ` · ${u.shots} 📷` : "") + costBit(u);
+    const perModel = Object.entries(u.models || {}).map(([m, x]) =>
+      `\n  ${m}: in ${fmtTok(x.input)} · out ${fmtTok(x.output)} · cache `
+      + `${fmtTok((x.cache_read||0) + (x.cache_creation||0))}`
+      + (x.cost ? ` · $${x.cost.toFixed(4)}` : "")).join("");
+    tk.title = `in ${fmtTok(u.input||0)} · out ${fmtTok(u.output||0)}`
+      + ` · cache ${fmtTok((u.cache_read||0) + (u.cache_creation||0))}`
+      + ` · ${u.turns||0} turns`
+      + `\n${u.shots||0} screenshot(s) sent, ~${fmtTok(u.shot_tokens||0)} visual tokens`
+      + (u.shots_unchanged ? ` (${u.shots_unchanged} skipped as unchanged)` : "")
+      + (perModel ? "\nBy model:" + perModel : "")
+      + (u.estimated ? "\nCost is estimated from list prices until the task reports its bill."
+                     : (u.cost ? "\nExact cost reported by the task." : ""));
+  } else {
+    tk.textContent = "";
+    tk.title = "";
+  }
+  // Which model is serving — small, beside the name, where a glance lands.
+  // Blank until the first reply: nothing knows before then.
+  document.getElementById("model").textContent = state.model || "";
+
+  const feed = document.getElementById("feed");
+  if (state.feed.length) {
+    const w = document.getElementById("welcome");
+    if (w) w.remove();
+    // Compare the last line's sequence number, not the list length: the app
+    // sends a fixed window of the most recent lines, so once a task produced
+    // more than that the length stopped changing and the feed froze — which
+    // is exactly when a long task most needs to be watchable.
+    const tail = state.feed[state.feed.length - 1];
+    const sig = tail && tail.seq != null ? tail.seq : state.feed.length;
+    if (sig !== lastFeed) {
+      lastFeed = sig;
+      feed.innerHTML = state.feed.map(m => {
+        const who = {claude:"agent", action:"doing", system:"", result:"done",
+                     error:"problem", job:"job", ask:"needs you"}[m.kind] ?? m.kind;
+        if (m.kind === "action")
+          return `<div class="msg action">${esc(m.text)}</div>`;
+        return `<div class="msg ${m.kind}">`
+             + (who ? `<div class="who">${who}</div>` : "")
+             + `<div class="body">${esc(m.text)}</div></div>`;
+      }).join("");
+      feed.scrollTop = feed.scrollHeight;
+    }
+  }
+
+  const jobs = document.getElementById("jobs");
+  jobs.innerHTML = state.jobs.length ? state.jobs.map(j => `
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:9px">
+        <h3>${esc(j.name)}</h3><span class="spacer"></span>
+        <span class="pill p-${j.trust}">${j.trust}</span>
+      </div>
+      <p>${esc(j.description)}</p>
+      <div class="stat"><span>${j.steps} steps · ${j.runs} runs</span>
+        <b>${Math.round(j.success_rate*100)}% ok</b></div>
+      <div style="margin-top:9px"><button onclick="runJob('${j.id}')">Run</button></div>
+    </div>`).join("")
+    : `<div class="empty">Nothing saved yet. Ask for something, and if it is worth
+        repeating you can save it as a job.</div>`;
+
+  const m = state.machine;
+  document.getElementById("machineCard").innerHTML =
+    `<div class="stat"><span>screen</span><b>${m.screen}</b></div>
+     <div class="stat"><span>scaling</span><b>${m.dpi}×</b></div>
+     <div class="stat"><span>apps it can open</span><b>${m.apps.join(", ")}</b></div>`;
+
+  // A question blocks the task, so it takes over the composer rather than
+  // sitting in the feed where it could scroll away unnoticed.
+  const ask = document.getElementById("asking");
+  if (state.question) {
+    if (ask.hidden) {
+      ask.hidden = false;
+      document.getElementById("q-text").value = "";
+    }
+    document.getElementById("qtext").textContent = state.question.text;
+    const ad = state.question.approve_deny;
+    document.getElementById("q-approve").hidden = !ad;
+    document.getElementById("q-deny").hidden = !ad;
+    const secs = Math.round(Date.now()/1000 - state.question.since);
+    document.getElementById("q-wait").textContent =
+      `Waiting ${secs}s — the task is paused until you answer, or until you press Stop.`;
+  } else if (!ask.hidden) {
+    ask.hidden = true;
+  }
+
+  // --- schedule ---
+  const missedBox = document.getElementById("missed");
+  if (missedBox) {
+    const miss = state.missed || [];
+    missedBox.innerHTML = miss.length ? `
+      <div class="card" style="border-color:var(--warn)">
+        <h3>${miss.length} came due while the app was closed</h3>
+        <p>They were not run. Start any of them from the Task tab if you still want them.</p>
+        ${miss.map(m => `<div class="stat"><span>${esc(m.task)}</span><b>${esc(m.when)}</b></div>`).join("")}
+      </div>` : "";
+
+    const rows = state.schedules || [];
+    document.getElementById("schedules").innerHTML = rows.length ? rows.map(s => `
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:9px">
+          <h3>${esc(s.task)}</h3><span class="spacer"></span>
+          <span class="pill ${s.enabled ? "p-trusted" : "p-draft"}">${s.enabled ? "on" : "off"}</span>
+        </div>
+        <p>${esc(s.when)} · next ${esc(s.next_human)}</p>
+        <div class="stat"><span>${s.runs} runs${s.misses ? " · " + s.misses + " missed while closed" : ""}</span>
+          <span>
+            <button onclick="toggleSch('${s.id}', ${!s.enabled})">${s.enabled ? "Disable" : "Enable"}</button>
+            <button onclick="delSch('${s.id}')">Remove</button>
+          </span></div>
+      </div>`).join("")
+      : `<div class="empty">Nothing scheduled. Add something below — it will run
+         while this app is open.</div>`;
+  }
+
+  const ch = state.channel || {};
+  const tg = ch.telegram || {};
+  document.getElementById("chanCard").innerHTML =
+    `<div class="stat"><span>this window</span><b>${ch.app ? "can ask you" : "not bound"}</b></div>
+     <div class="stat"><span>telegram bot</span><b>${tg.bot ? "@"+esc(tg.bot) : "no token yet"}</b></div>
+     <div class="stat"><span>paired</span><b>${tg.paired ? "yes" : "no — press Pair"}</b></div>
+     <div class="stat"><span>mail</span><b>${(ch.mail||{}).configured ? esc(ch.mail.to) : "not set up"}</b></div>`;
+
+  const s = state.settings;
+  // Only re-apply saved settings while the user is NOT mid-edit. This asked
+  // set-level alone, so changing any OTHER field — the provider dropdown —
+  // was silently reverted by the next 900ms poll.
+  if (!settingsTouched()) {
+    document.getElementById("set-level").value = s.automation_level;
+    document.getElementById("set-headless").checked = !!s.browser_headless;
+    document.getElementById("set-wd").value = s.watchdog_minutes;
+    document.getElementById("set-stall").value = s.stall_minutes;
+    document.getElementById("set-turns").value = s.max_turns ?? 0;
+    document.getElementById("set-provider").value = s.provider ?? "anthropic";
+    document.getElementById("set-maxout").value = s.max_output_tokens ?? 0;
+    document.getElementById("set-shotdetail").value = s.screenshot_detail ?? "standard";
+    document.getElementById("set-baseurl").value = s.base_url ?? "";
+    fillModels(s.provider ?? "anthropic", s.model ?? "", s.fallback_model ?? "");
+  }
+  // Key presence and proxy state are shown, never the key itself.
+  const keys = state.keys || {};
+  document.getElementById("gm-key").placeholder = keys.gemini
+    ? "Gemini key saved — paste a new one to replace it" : "Gemini API key (AIza…)";
+  const px = state.proxy;
+  document.getElementById("cu-proxy").textContent = !px ? "" :
+    px.reachable ? (px.ours ? "Proxy: running, started by the app."
+                            : "Proxy: running, started outside the app.")
+    : px.installed ? "Proxy: not running — the app starts it when a task needs it."
+    : px.loopback ? "Proxy: not running, and no LiteLLM install was found next to the app."
+    : "";
+}
+
+const esc = s => (s ?? "").replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+const fmt = s => { s = Math.round(s || 0);
+  return s < 60 ? `${s}s` : `${Math.floor(s/60)}m ${String(s%60).padStart(2,"0")}s`; };
+const fmtTok = n => n >= 1e6 ? (n/1e6).toFixed(1)+"M"
+  : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n|0);
+// "~$0.08" while the price is an estimate, "$0.12" once it is the real one.
+const costBit = u => u.cost ? ` · ${u.estimated ? "~" : ""}$${u.cost.toFixed(2)}` : "";
+
+async function poll() {
+  try { render(await api().get_state()); } catch (e) {}
+}
+
+document.getElementById("run").onclick = async () => {
+  const t = document.getElementById("task").value.trim();
+  if (!t) return;
+  lastFeed = -1;
+  const r = await api().run_task(t);
+  if (!r.ok) alert(r.error);
+  document.getElementById("task").value = "";
+  poll();
+};
+const stopTask = async () => { await api().stop_task(); poll(); };
+document.getElementById("stop").onclick = stopTask;
+document.getElementById("q-stop").onclick = stopTask;
+document.getElementById("pause").onclick = async () => {
+  const held = document.getElementById("pause").textContent === "Resume";
+  await api().pause_task(!held);   // Resume means: turn the pause off
+  poll();
+};
+document.getElementById("task").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) document.getElementById("run").click();
+});
+document.getElementById("save").onclick = async () => {
+  await api().update_settings({
+    automation_level: document.getElementById("set-level").value,
+    browser_headless: document.getElementById("set-headless").checked,
+    watchdog_minutes: +document.getElementById("set-wd").value,
+    stall_minutes: +document.getElementById("set-stall").value,
+    max_turns: +document.getElementById("set-turns").value,
+    model: document.getElementById("set-model").value,
+    fallback_model: document.getElementById("set-fallback").value,
+    provider: document.getElementById("set-provider").value,
+    max_output_tokens: +document.getElementById("set-maxout").value,
+    screenshot_detail: document.getElementById("set-shotdetail").value,
+    base_url: document.getElementById("set-baseurl").value.trim(),
+  });
+  // Saved is the new truth, so stop holding the poll off — otherwise these
+  // fields stay "being edited" forever and never reflect what was stored.
+  SET_IDS.forEach(id => delete document.getElementById(id).dataset.touched);
+  document.getElementById("save").textContent = "Saved";
+  setTimeout(() => document.getElementById("save").textContent = "Save settings", 1400);
+};
+// Populate both model dropdowns for a provider. OpenRouter's list is fetched
+// live by the app, so it is never a stale hardcoded set.
+let modelsFor = null;
+let pendingFor = null;          // a fetch already in flight for this provider
+let fillSeq = 0;                // newest request wins; older ones may not paint
+const viaProxy = p => p === "gemini" || p === "custom";
+async function fillModels(provider, model, fallback) {
+  document.getElementById("or-box").hidden = provider !== "openrouter";
+  document.getElementById("cu-box").hidden = provider !== "custom";
+  document.getElementById("gm-box").hidden = !viaProxy(provider);
+  if (modelsFor === provider) { setSel(model, fallback); return; }
+  if (pendingFor === provider) return;      // the 900ms poll re-asks; once is enough
+  pendingFor = provider;
+  const seq = ++fillSeq;
+  const cnt = document.getElementById("model-count");
+  // A proxy list can take ~15s the first time: the app may have to start
+  // the proxy before it can ask it. Say so, or the old list looks like the
+  // answer.
+  cnt.textContent = provider === "openrouter" ? "— loading…"
+    : viaProxy(provider) ? "— asking the proxy (starting it first if needed, ~15 s)…" : "";
+  let list = [];
+  try { list = await api().list_models(provider); } catch (e) { list = []; }
+  if (pendingFor === provider) pendingFor = null;
+  // A slower, older request (for the provider chosen before this one) must
+  // not land on top of the newer answer.
+  if (seq !== fillSeq) return;
+  modelsFor = provider;
+  const m = document.getElementById("set-model");
+  const f = document.getElementById("set-fallback");
+  m.innerHTML = list.map(x =>
+    `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join("");
+  f.innerHTML = `<option value="">None — fail rather than switch</option>`
+    + list.filter(x => x.id).map(x =>
+        `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join("");
+  const n = list.filter(x => x.id).length;
+  cnt.textContent = provider === "openrouter" ? `— ${n} available`
+    : viaProxy(provider) ? `— ${n} from the proxy` : "";
+  setSel(model, fallback);
+}
+function setSel(model, fallback) {
+  const m = document.getElementById("set-model");
+  const f = document.getElementById("set-fallback");
+  if (model && ![...m.options].some(o => o.value === model))
+    m.add(new Option(model + " (saved)", model));
+  if (fallback && ![...f.options].some(o => o.value === fallback))
+    f.add(new Option(fallback + " (saved)", fallback));
+  m.value = model; f.value = fallback;
+}
+document.getElementById("set-provider").addEventListener("change", e => {
+  e.target.dataset.touched = 1;
+  fillModels(e.target.value, "", "");
+});
+document.getElementById("or-save").onclick = async () => {
+  const el = document.getElementById("or-key");
+  const r = await api().save_openrouter_key(el.value);
+  document.getElementById("or-msg").textContent = r.ok
+    ? (r.saved ? "Key saved (encrypted)." : "Key cleared.")
+    : ("Could not save: " + r.error);
+  el.value = "";
+};
+document.getElementById("gm-save").onclick = async () => {
+  const el = document.getElementById("gm-key");
+  const r = await api().save_gemini_key(el.value);
+  document.getElementById("gm-msg").textContent = r.ok
+    ? ((r.saved ? "Key saved (encrypted). " : "Key cleared. ") + (r.detail || ""))
+    : ("Could not save: " + r.error);
+  el.value = "";
+};
+
+const SET_IDS = ["set-level","set-headless","set-wd","set-stall","set-turns",
+                 "set-model","set-fallback","set-provider","set-maxout","set-baseurl",
+                 "set-shotdetail"];
+const settingsTouched = () =>
+  SET_IDS.some(id => document.getElementById(id).dataset.touched);
+SET_IDS.forEach(id =>
+  document.getElementById(id).addEventListener("change", e => e.target.dataset.touched = 1));
+
+window.runJob = async id => { await api().run_job(id);
+  document.querySelector('.tab[data-pane=task]').click(); poll(); };
+
+/* ---- answering a question the task is blocked on ---- */
+async function answer(kind, text) {
+  await api().answer_question(kind, text || "");
+  document.getElementById("asking").hidden = true;
+  poll();
+}
+document.getElementById("q-approve").onclick = () => answer("approve");
+document.getElementById("q-deny").onclick = () => answer("deny");
+document.getElementById("q-send").onclick = () => {
+  const t = document.getElementById("q-text").value.trim();
+  if (t) answer("text", t);
+};
+document.getElementById("q-text").addEventListener("keydown", e => {
+  if (e.key === "Enter") document.getElementById("q-send").click();
+});
+
+/* ---- schedule ---- */
+window.delSch = async id => {
+  if (!confirm("Remove this schedule?")) return;
+  await api().remove_schedule(id); poll();
+};
+window.toggleSch = async (id, on) => { await api().toggle_schedule(id, on); poll(); };
+document.getElementById("sch-add").onclick = async () => {
+  const task = document.getElementById("sch-task").value.trim();
+  const when = document.getElementById("sch-when").value.trim();
+  if (!task || !when) return alert("Both a task and a time are needed.");
+  const r = await api().add_schedule(task, when, "");
+  if (!r.ok) return alert(r.error);
+  document.getElementById("sch-task").value = "";
+  document.getElementById("sch-when").value = "";
+  poll();
+};
+
+/* ---- logins ---- */
+async function renderCreds() {
+  const list = await api().list_credentials();
+  document.getElementById("creds").innerHTML = list.length ? list.map(c => `
+    <div class="stat">
+      <span><b>${esc(c.name)}</b>${c.note ? " — " + esc(c.note) : ""}</span>
+      <span>${c.uses ? c.uses + " uses" : "never used"}
+        <button onclick="delCred('${esc(c.name)}')">Remove</button></span>
+    </div>`).join("")
+    : `<div class="hint">No logins stored. Add one here, or let a task ask for
+       it when it hits a sign-in page.</div>`;
+}
+window.delCred = async name => {
+  if (!confirm(`Remove the stored login "${name}"?`)) return;
+  await api().delete_credential(name); renderCreds();
+};
+document.getElementById("cred-add").onclick = async () => {
+  const n = document.getElementById("cred-name").value.trim();
+  const v = document.getElementById("cred-value").value;
+  const r = await api().save_credential(n, v, "");
+  if (!r.ok) return alert(r.error);
+  document.getElementById("cred-name").value = "";
+  document.getElementById("cred-value").value = "";
+  renderCreds();
+};
+
+/* ---- telegram ---- */
+const tgMsg = t => document.getElementById("tg-msg").innerHTML = t;
+document.getElementById("tg-save").onclick = async () => {
+  const t = document.getElementById("tg-token").value.trim();
+  if (!t) return;
+  const r = await api().save_telegram_token(t);
+  document.getElementById("tg-token").value = "";
+  tgMsg(r.ok ? `Token accepted — the bot is <b>@${esc(r.bot_username)}</b>.
+                Now press Pair.`
+             : "Telegram rejected that token. Check it with @BotFather.");
+  poll();
+};
+document.getElementById("tg-pair").onclick = async () => {
+  const r = await api().telegram_pair();
+  if (!r.ok) return tgMsg(esc(r.error));
+  tgMsg(`Open <a href="${r.link}" target="_blank">${esc(r.link)}</a> and press
+         <b>Start</b>. Waiting up to 45 seconds…`);
+  const done = await api().telegram_pair_finish();
+  tgMsg(done.ok ? "Paired. It can now reach you on Telegram."
+                : esc(done.error));
+  poll();
+};
+document.getElementById("tg-test").onclick = async () => {
+  const r = await api().telegram_test();
+  tgMsg(r.ok ? "Sent — check your phone." : "Not paired yet.");
+};
+renderCreds();
+
+// Whichever signal arrives first starts the loop; the guard stops the
+// fallback from installing a second interval and polling twice as often.
+let polling = false;
+function startPolling() {
+  if (polling) return;
+  polling = true;
+  poll();
+  setInterval(poll, 900);
+}
+window.addEventListener("pywebviewready", startPolling);
+setTimeout(startPolling, 1200);
+</script>
+</body>
+</html>

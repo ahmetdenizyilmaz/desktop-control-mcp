@@ -32,3 +32,42 @@ cdp_*.py
 .idea/
 .DS_Store
 Thumbs.db
+
+# ---------------------------------------------------------------------------
+# agent/ — the desktop agent. Source is tracked; none of the below is.
+# ---------------------------------------------------------------------------
+
+# Credentials. vault.json is the DPAPI secret store, .daemon-token is a live
+# token. Neither belongs in history, encrypted or not.
+agent/vault.json
+agent/.daemon-token
+
+# Browser session state: cookies, logins, 61MB of Chromium profile.
+agent/browser_profile/
+agent/downloads/
+
+# Scratch output — images, logs, whatever a task happened to write. 788MB.
+agent/workspace/
+agent/@AutomationLog.txt
+
+# Per-machine runtime data, not source. paths.py already treats these as user
+# data, and machine_profile.json is meaningless on another PC.
+agent/lessons.json
+agent/machine_profile.json
+agent/schedules.json
+agent/settings.json
+agent/macros/
+
+# Learned caches — remembered selectors and which sites needed a headed
+# browser. They rebuild themselves, and they record where this PC has been.
+agent/browser_flows.json
+agent/browser_sites.json
+
+# A page captured for a one-off parse.
+agent/bist30page.html
+agent/bist30page_files/
+
+# Build artefacts and the local LiteLLM venv at the repo root.
+build/
+dist/
+litellm-venv/

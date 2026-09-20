@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg:#141d2b; --panel:#1a2434; --line:#26344a;
+    --ink:#e6edf7; --ink2:#9db0c9; --accent:#5b8dff; --warn:#e0a94a;
+    --crit:#f0796e; --good:#4ec98d;
+    --sans:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:13px;display:flex;flex-direction:column;overflow:hidden;
+    border:1px solid #33456180;border-radius:14px}
+  .top{display:flex;align-items:center;gap:8px;padding:11px 14px 6px}
+  .glow{width:9px;height:9px;border-radius:50%;background:var(--warn);
+    box-shadow:0 0 0 0 #e0a94a99;animation:pulse 1.8s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 #e0a94a88}70%{box-shadow:0 0 0 7px #e0a94a00}100%{box-shadow:0 0 0 0 #e0a94a00}}
+  .title{font-weight:600;font-size:12px;color:var(--ink2);letter-spacing:.3px}
+  .spacer{flex:1}
+  .wait{font-size:11px;color:var(--warn)}
+  .q{padding:2px 14px 10px;overflow-y:auto;flex:1;white-space:pre-wrap;
+    line-height:1.4;max-height:190px}
+  .row{display:flex;gap:7px;align-items:center;padding:0 14px 12px}
+  input{flex:1;background:#0a1018;border:1px solid var(--line);border-radius:8px;
+    color:var(--ink);padding:8px 10px;font-family:var(--sans);font-size:13px}
+  input:focus{outline:none;border-color:var(--accent)}
+  button{font-family:var(--sans);font-size:12px;font-weight:600;border:1px solid var(--line);
+    background:var(--panel);color:var(--ink);padding:8px 12px;border-radius:8px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--good);border-color:var(--good);color:#06130c}
+  button.deny{border-color:var(--crit);color:var(--crit)}
+  .hint{padding:0 14px 12px;font-size:11px;color:var(--ink2)}
+  .fade-in{animation:fin .28s ease both}
+  @keyframes fin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body class="fade-in">
+  <div class="top">
+    <span class="glow"></span>
+    <span class="title">AGI AGENT NEEDS YOU</span>
+    <span class="spacer"></span>
+    <span class="wait" id="wait"></span>
+  </div>
+  <div class="q" id="q">…</div>
+  <div class="row" id="ad" hidden>
+    <button class="primary" id="approve">Approve</button>
+    <button class="deny" id="deny">Deny</button>
+  </div>
+  <div class="row">
+    <input id="text" placeholder="Type an answer…" autofocus>
+    <button id="send">Send</button>
+  </div>
+  <div class="hint">Switch to the app window to answer there instead.</div>
+
+<script>
+const api = () => window.pywebview.api;
+let since = 0, hasAD = false;
+
+async function answer(kind, text) {
+  try { await api().answer_question(kind, text || ""); } catch (e) {}
+  document.getElementById("text").value = "";
+}
+document.getElementById("approve").onclick = () => answer("approve", "");
+document.getElementById("deny").onclick = () => answer("deny", "");
+document.getElementById("send").onclick = () => {
+  const t = document.getElementById("text").value.trim();
+  if (t) answer("text", t);
+};
+document.getElementById("text").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); document.getElementById("send").click(); }
+});
+
+async function tick() {
+  let st; try { st = await api().get_state(); } catch (e) { return; }
+  const qd = st && st.question;
+  if (!qd) return;                         // window is hidden by the app anyway
+  document.getElementById("q").textContent = qd.text;
+  hasAD = !!qd.approve_deny;
+  document.getElementById("ad").hidden = !hasAD;
+  const secs = Math.round(Date.now()/1000 - qd.since);
+  document.getElementById("wait").textContent = secs + "s";
+}
+setInterval(tick, 500);
+tick();
+</script>
+</body>
+</html>
