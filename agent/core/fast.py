@@ -1,0 +1,454 @@
+"""System-1 decisions about *this desktop*: the bindings from `jev` to the engine.
+
+`jev.py` knows how to get a typed answer. This module knows which questions
+are worth asking about a Windows UI, how to turn a control tree into a state
+small enough to send, and — the part that matters most — when an answer is
+good enough to act on.
+
+Four places in the existing engine are doing a fuzzy job with crisp code, and
+each is one question wide:
+
+  `locator._resolve_among`  "several controls share this name; which one?"
+                            Today: the k-th in tree order, or nearest anchor.
+                            An ordinal dies the moment a page reflows.
+
+  `replay._alternate`       rung 3 of the repair ladder. Today it has exactly
+                            one idea — look the name up via OCR labels. A
+                            Choice over everything in the window is a general
+                            repair for ~200ms, tried *before* waking Claude.
+
+  `act.check`               "did that step work?" Structural predicates miss
+                            the interesting failure: a modal that is neither
+                            the success state nor an error.
+
+  `retrieval.search`        lexical TF-IDF, which by its own docstring cannot
+                            match "stock market" to "borsa" and therefore
+                            hands its candidates to Claude. A re-rank is
+                            exactly the shape Jev is for.
+
+And one that does not exist yet and should: a **commit guard**. The whole
+point of a fast loop is to stop asking permission for every click. That is
+only safe if something cheap is watching for the click that spends money or
+cannot be undone. At ~$0.00005 per check it is affordable to ask before every
+single action, which is the only frequency that actually protects anything.
+
+**The rule this module enforces.** Nothing here acts on an answer that is not
+both real and confident. `jev.Decision.real` is False for the offline stub, and
+`Verdict.act` is False unless confidence clears the threshold for that call
+site. A missing API key must surface as "escalate to Claude", never as a
+confident random click — STATE.md §3, fail loudly rather than plausibly.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable, Mapping, Sequence
+
+from . import jev
+
+#: Default gate. Chosen to match TypeSafe's own guidance (act above 0.8,
+#: review 0.5-0.8, escalate below 0.5) and the project's habit of preferring a
+#: slow correct step to a fast wrong one.
+CONFIDENT = 0.80
+
+#: A confident distribution can still be split across two near-identical
+#: candidates — two "Buy" buttons, two "Continue". Margin catches that;
+#: confidence does not. Both must clear for a click.
+MARGIN = 0.25
+
+#: Above this probability that an action spends money or cannot be undone, the
+#: fast loop stops and hands the decision to Claude or the user. Deliberately
+#: low: a false alarm costs one round trip, a miss costs a plane ticket.
+COMMIT_STOP = 0.30
+
+#: How many controls to put in the state. The full table is capped at 100 by
+#: `find_controls` already; 60 keeps a decision near 2k tokens (~$0.00008).
+MAX_ROWS = 60
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """An answer plus the single bit the caller actually needs: act or not."""
+
+    act: bool
+    why: str
+    answer: jev.Answer | None = None
+    decision: jev.Decision | None = None
+
+    @property
+    def confidence(self) -> float:
+        return getattr(self.answer, "confidence", 0.0) if self.answer else 0.0
+
+    def line(self) -> str:
+        head = "ACT " if self.act else "HOLD"
+        tail = self.decision.line() if self.decision else ""
+        return f"{head} {self.why} | {tail}".strip()
+
+
+def _gate(d: jev.Decision, key: str, at: float,
+          margin: float | None = None) -> Verdict:
+    """The one place that decides whether an answer may be acted on."""
+    if not d.real:
+        return Verdict(False, "offline stub — no API key; escalate", None, d)
+    a = d.answers.get(key)
+    if a is None:
+        return Verdict(False, f"no answer for {key!r}", None, d)
+    conf = a.confidence
+    if conf < at:
+        return Verdict(False, f"confidence {conf:.2f} < {at:.2f}", a, d)
+    if margin is not None and isinstance(a, jev.ChoiceAnswer) and a.margin < margin:
+        return Verdict(False, f"margin {a.margin:.2f} < {margin:.2f} "
+                              f"({a.ranked[:2]})", a, d)
+    return Verdict(True, f"confidence {conf:.2f}", a, d)
+
+
+# --------------------------------------------------------------------------
+# State: a window as text
+# --------------------------------------------------------------------------
+
+def rows_to_state(rows: Sequence[Mapping[str, Any]], *,
+                  window: str = "", extra: Mapping[str, Any] | None = None,
+                  cap: int = MAX_ROWS) -> dict:
+    """Turn a control table into the JSON Jev reads.
+
+    Keys are short on purpose — every character is an input token, and at 5Hz
+    the difference between `"control_type"` and `"t"` is real money. Keeping
+    the *values* verbatim matters far more than keeping the keys readable.
+
+    The integer `i` is the contract: the model answers with `i`, and the
+    caller maps it back to a real `locator.Element`. The model never sees a
+    coordinate and never returns one — the project's first rule.
+    """
+    out = []
+    for i, r in enumerate(rows[:cap]):
+        row: dict[str, Any] = {"i": i, "t": r.get("type") or r.get("control") or "",
+                               "n": r.get("name") or ""}
+        if r.get("id"):
+            row["id"] = r["id"]
+        if r.get("hint"):
+            row["hint"] = r["hint"]
+        out.append(row)
+    state: dict[str, Any] = {"window": window, "controls": out}
+    if len(rows) > cap:
+        state["truncated"] = len(rows) - cap
+    if extra:
+        state.update(dict(extra))
+    return state
+
+
+def elements_to_rows(elements: Iterable[Any]) -> list[dict]:
+    """`locator.Element` objects -> plain rows. Keeps `fast` importable, and
+    testable, on a machine with no UI Automation."""
+    rows = []
+    for e in elements:
+        rows.append({"type": getattr(e, "control", "") or getattr(e, "ctype", ""),
+                     "name": getattr(e, "name", "") or "",
+                     "id": getattr(e, "automation_id", "") or ""})
+    return rows
+
+
+def fingerprint(rows: Sequence[Mapping[str, Any]]) -> str:
+    """Cheap identity for a screen state.
+
+    A decision takes ~200ms and the UI does not wait. Before acting, compare
+    the fingerprint taken when the question was asked with one taken now: if
+    the window changed underneath, the answer refers to a screen that no
+    longer exists and must be discarded, not applied. This is the failure the
+    Doom demo tolerates because a missed shot is free; a click on a moved
+    checkout button is not.
+    """
+    import hashlib
+    blob = "\n".join(f"{r.get('type','')}|{r.get('name','')}|{r.get('id','')}"
+                     for r in rows)
+    return hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+# --------------------------------------------------------------------------
+# The questions
+# --------------------------------------------------------------------------
+
+def q_pick(intent: str, rows: Sequence[Mapping[str, Any]],
+           cap: int = MAX_ROWS) -> jev.Choice:
+    """"Which control satisfies this intent?" — the workhorse.
+
+    Options are the row indices. Descriptions are `type: name` because the
+    type is what separates the menu item "Save" from the button "Save" from
+    the tab "Save", and name alone is exactly the ambiguity that
+    `_resolve_among` currently resolves by counting.
+    """
+    criteria: dict[str, str | None] = {}
+    for i, r in enumerate(rows[:cap]):
+        name = (r.get("name") or "").strip()
+        t = (r.get("type") or "").strip()
+        criteria[str(i)] = f"{t}: {name}" if name else f"{t} (unnamed)"
+    criteria["none"] = ("No control here does that — the screen is wrong, "
+                        "the step is not possible yet, or it must be scrolled to")
+    return jev.Choice(
+        instructions={"goal": intent,
+                      "task": "Choose the one control a careful person would "
+                              "use next to achieve the goal. Answer with its "
+                              "index, or 'none'."},
+        criteria=criteria)
+
+
+def q_worked(intent: str) -> jev.Noul:
+    """"Did that step do what it was for?" — cheaper than a screenshot, and
+    it notices the failure a structural predicate cannot: a screen that is
+    neither the old one nor the intended one."""
+    return jev.Noul(
+        instructions={"step": intent,
+                      "task": "Compare `before` and `after`. Did the step "
+                              "achieve its purpose?"},
+        criteria={"true": "The after state is what this step was meant to "
+                          "produce — the dialog opened, the value is set, the "
+                          "page advanced.",
+                  "false": "Nothing changed, an error or warning appeared, a "
+                           "different dialog appeared, or the app is asking "
+                           "for something the step did not supply."})
+
+
+def q_commit(intent: str) -> jev.Noul:
+    """The guard. Asked before every click the fast loop makes.
+
+    Written as "would a careful person want to be asked first", not "is this
+    dangerous", because the latter reads as physical danger and under-fires on
+    the case we care about: a perfectly ordinary-looking button that happens
+    to be the last one before money moves.
+    """
+    return jev.Noul(
+        instructions={"about_to_do": intent,
+                      "task": "Would a careful person want to be asked before "
+                              "this is done on their computer?"},
+        criteria={"true": "It spends money, places or confirms an order, "
+                          "sends a message to someone, submits a form that "
+                          "cannot be taken back, deletes or overwrites data, "
+                          "changes a password or a setting that locks them "
+                          "out, or accepts terms on their behalf.",
+                  "false": "It searches, filters, sorts, scrolls, opens, "
+                           "expands, navigates, fills a field, or puts "
+                           "something in a basket — anything they could undo "
+                           "by clicking back."})
+
+
+def q_blocker(rows_hint: str = "") -> jev.Choice:
+    """What kind of thing is in the way — the single most common time sink in
+    shopping and ticketing flows, and pure recognition."""
+    return jev.Choice(
+        instructions="The expected control is not here. What is on screen "
+                     "instead?",
+        criteria={"cookie_banner": "A cookie or privacy consent notice",
+                  "login": "A sign-in or account wall",
+                  "captcha": "A human-verification or bot check",
+                  "newsletter": "A promotional, app-install or newsletter popup",
+                  "error": "An error, outage or 'something went wrong' message",
+                  "sold_out": "The item, seat or fare is no longer available",
+                  "loading": "Still loading — spinner, skeleton or empty list",
+                  "wrong_page": "A different page than expected",
+                  "nothing": "Nothing is blocking; the control is simply "
+                             "elsewhere or needs scrolling to"})
+
+
+# --------------------------------------------------------------------------
+# The calls
+# --------------------------------------------------------------------------
+
+def pick(intent: str, rows: Sequence[Mapping[str, Any]], *,
+         window: str = "", at: float = CONFIDENT, margin: float = MARGIN,
+         also: Mapping[str, jev.Question] | None = None,
+         client: jev.Client | None = None) -> tuple[int | None, Verdict]:
+    """Choose a control for an intent. Returns its row index, or None.
+
+    `also` rides along free: independent questions are evaluated in parallel
+    against the same state, so asking "and is this a commit?" and "and what is
+    blocking?" in the same breath costs a few hundred tokens and no extra
+    wall-clock. Always send the commit guard with the pick — a second round
+    trip to ask it is 200ms the loop does not have, and a guard you skipped
+    because it was slow is a guard you do not have.
+    """
+    c = client or jev.client()
+    qs: dict[str, jev.Question] = {"pick": q_pick(intent, rows)}
+    if also:
+        qs.update(also)
+    d = c.ask(rows_to_state(rows, window=window), qs)
+    v = _gate(d, "pick", at, margin)
+    if not v.act:
+        return None, v
+    choice = getattr(v.answer, "choice", "")
+    if choice == "none":
+        return None, Verdict(False, "model says no control here fits",
+                             v.answer, d)
+    try:
+        i = int(choice)
+    except ValueError:
+        return None, Verdict(False, f"unparsable choice {choice!r}", v.answer, d)
+    if not 0 <= i < len(rows):
+        return None, Verdict(False, f"index {i} out of range", v.answer, d)
+    return i, v
+
+
+def safe_to_act(intent: str, rows: Sequence[Mapping[str, Any]], *,
+                window: str = "", stop_at: float = COMMIT_STOP,
+                client: jev.Client | None = None) -> Verdict:
+    """The guard on its own, for call sites that did not batch it.
+
+    Note the inverted gate: this is the one question where an *unreliable*
+    answer must not mean "go ahead". An offline stub, a low-confidence
+    reading, or an outright failure all resolve to hold.
+    """
+    c = client or jev.client()
+    d = c.ask(rows_to_state(rows, window=window), {"commit": q_commit(intent)})
+    if not d.real:
+        return Verdict(False, "offline stub cannot clear a commit guard", None, d)
+    a = d.answers.get("commit")
+    if not isinstance(a, jev.NoulAnswer):
+        return Verdict(False, "no commit answer", None, d)
+    if a.p >= stop_at:
+        return Verdict(False, f"looks irreversible (p={a.p:.2f}) — confirm first",
+                       a, d)
+    return Verdict(True, f"reversible (p={a.p:.2f})", a, d)
+
+
+def rerank(query: str, candidates: Sequence[Mapping[str, Any]], *,
+           at: float = 0.6, client: jev.Client | None = None
+           ) -> tuple[int | None, Verdict]:
+    """Pick the saved job that answers a description.
+
+    This is the gap `retrieval.py` documents and leaves open: lexical matching
+    cannot connect "stock market" to "borsa". It hands its candidates up to
+    Claude for that. A Choice over the same candidates closes it for 200ms
+    instead of a full turn, and still hands up whatever it is unsure about.
+    """
+    c = client or jev.client()
+    crit: dict[str, str | None] = {}
+    for i, row in enumerate(candidates):
+        name = row.get("name", "")
+        desc = (row.get("description") or "").strip()
+        crit[str(i)] = f"{name} — {desc}" if desc else str(name)
+    crit["none"] = "None of these is the job being described"
+    d = c.ask({"asked_for": query},
+              {"job": jev.Choice(instructions="Which saved job is the person "
+                                              "describing?", criteria=crit)})
+    v = _gate(d, "job", at)
+    if not v.act:
+        return None, v
+    ch = getattr(v.answer, "choice", "")
+    if ch == "none":
+        return None, Verdict(False, "no saved job matches", v.answer, d)
+    try:
+        return int(ch), v
+    except ValueError:
+        return None, Verdict(False, f"unparsable choice {ch!r}", v.answer, d)
+
+
+def worked(intent: str, before: Sequence[Mapping[str, Any]],
+           after: Sequence[Mapping[str, Any]], *,
+           at: float = 0.6, client: jev.Client | None = None) -> Verdict:
+    """Verify a step from the control-table diff, with no screenshot."""
+    c = client or jev.client()
+    state = {"step": intent,
+             "before": rows_to_state(before)["controls"],
+             "after": rows_to_state(after)["controls"]}
+    d = c.ask(state, {"worked": q_worked(intent), "blocker": q_blocker()})
+    if not d.real:
+        return Verdict(False, "offline stub — cannot verify", None, d)
+    a = d.answers.get("worked")
+    if not isinstance(a, jev.NoulAnswer):
+        return Verdict(False, "no answer", None, d)
+    if a.confidence < at:
+        return Verdict(False, f"unsure ({a.p:.2f}) — escalate", a, d)
+    blocker = d.answers.get("blocker")
+    tag = getattr(blocker, "choice", "") if blocker else ""
+    why = f"p(worked)={a.p:.2f}" + (f", blocker={tag}" if tag and tag != "nothing"
+                                    else "")
+    return Verdict(a.yes, why, a, d)
+
+
+# --------------------------------------------------------------------------
+# A loop that keeps up with the screen
+# --------------------------------------------------------------------------
+
+@dataclass
+class Tick:
+    ok: bool
+    note: str
+    index: int | None = None
+    verdict: Verdict | None = None
+    stale: bool = False
+
+
+class Pilot:
+    """Sense -> decide -> act, at a rate the UI notices.
+
+    The hazard at this speed is not a wrong answer, it is a *late* one. The
+    decision describes the screen as it was ~200ms ago. Before acting, the
+    screen is re-sensed and fingerprinted; if it moved, the answer is dropped
+    and the loop senses again rather than clicking where a button used to be.
+    Dropping a tick costs 200ms. Not dropping it costs whatever was underneath.
+
+    Deliberately *not* pipelined. Requesting decision N+1 while acting on N
+    would hide the latency, but every action changes the state the next
+    decision is about, so the pipelined answer is stale by construction. The
+    Doom demo can live with that because a wasted shot is free. A checkout
+    page cannot.
+    """
+
+    def __init__(self, sense: Callable[[], list[dict]],
+                 act: Callable[[int], bool], *,
+                 hz: float = 4.0, client: jev.Client | None = None,
+                 guard: bool = True, window: str = "") -> None:
+        self.sense = sense
+        self.act = act
+        self.period = 1.0 / max(hz, 0.2)
+        self.client = client or jev.client()
+        self.guard = guard
+        self.window = window
+        self.ticks: list[Tick] = []
+
+    def step(self, intent: str, *, at: float = CONFIDENT) -> Tick:
+        rows = self.sense()
+        if not rows:
+            return self._log(Tick(False, "nothing on screen"))
+        before = fingerprint(rows)
+
+        also = {"commit": q_commit(intent)} if self.guard else None
+        i, v = pick(intent, rows, window=self.window, at=at, also=also,
+                    client=self.client)
+
+        if self.guard and v.decision is not None:
+            g = v.decision.answers.get("commit")
+            if isinstance(g, jev.NoulAnswer) and g.p >= COMMIT_STOP:
+                return self._log(Tick(False,
+                                      f"commit guard held (p={g.p:.2f}) — "
+                                      f"hand to Claude or the user",
+                                      None, v))
+        if i is None:
+            return self._log(Tick(False, v.why, None, v))
+
+        if fingerprint(self.sense()) != before:
+            return self._log(Tick(False, "screen moved while deciding — "
+                                         "answer discarded", i, v, stale=True))
+        return self._log(Tick(bool(self.act(i)), v.why, i, v))
+
+    def run(self, intent: str, *, until: Callable[[], bool],
+            budget_s: float = 30.0, at: float = CONFIDENT) -> list[Tick]:
+        end = time.monotonic() + budget_s
+        while time.monotonic() < end and not until():
+            t0 = time.monotonic()
+            tick = self.step(intent, at=at)
+            if not tick.ok and not tick.stale:
+                break                       # hand up rather than thrash
+            slack = self.period - (time.monotonic() - t0)
+            if slack > 0:
+                time.sleep(slack)
+        return self.ticks
+
+    def _log(self, t: Tick) -> Tick:
+        self.ticks.append(t)
+        return t
+
+    def report(self) -> str:
+        ok = sum(1 for t in self.ticks if t.ok)
+        stale = sum(1 for t in self.ticks if t.stale)
+        return (f"{len(self.ticks)} ticks, {ok} acted, {stale} stale | "
+                f"{self.client.stats.report()}")
