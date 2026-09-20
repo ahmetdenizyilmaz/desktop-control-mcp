@@ -59,6 +59,32 @@ from typing import Any, Iterable, Mapping, Sequence
 #: (Cloudflare Workers AI, OpenRouter, Vercel) or a local recording proxy.
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 
+#: Cloudflare Workers AI carries Jev as a partner model. This matters because
+#: TypeSafe's own access is a waitlist with no self-serve signup, while a
+#: Cloudflare account can be opened in a minute — so this is the route that
+#: can be working today. The request is the same three fields wrapped in
+#: Cloudflare's envelope, and the response comes back under `result`.
+#:
+#: Caveat worth knowing before relying on it: Jev is listed there as a
+#: third-party provider and the model card points at the dashboard for
+#: pricing rather than quoting Neurons, so it is unclear whether the free
+#: 10,000 Neurons/day allocation covers it. Assume billing may need enabling.
+CF_ENDPOINT = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run"
+CF_MODEL = "typesafe/jev"
+
+#: OpenRouter, added 2026-09-18, three days after launch. **This is the route
+#: that works without a TypeSafe invite**, and it is how most of the public
+#: projects were built during the first week.
+#:
+#: Note it is *not* the chat-completions API — that endpoint rejects the model
+#: outright ("jev-1.13 is a decisions model and cannot be used with the
+#: chat/completions endpoint"). It is a separate Decisions endpoint whose body
+#: is the same three fields as TypeSafe's own, which is why this client needs
+#: nothing but a different URL and model id to use it.
+OR_ENDPOINT = "https://openrouter.ai/api/v1/systemone"
+OR_MODEL = "jev-1.13"
+
+
 #: `jev-latest` tracks the current release (jev-1.13.0 at time of writing).
 #: Pin an exact version if a threshold in `fast.py` was tuned against it —
 #: calibration is a property of the checkpoint, not of the API.
@@ -78,6 +104,18 @@ STATE_TOKEN_BUDGET = 32_000
 
 #: Retried with backoff; anything else is surfaced immediately.
 RETRY_STATUS = (429, 500, 502, 503, 504, 529)
+
+#: Where each backend keeps its credential, its default endpoint and its
+#: default model id. Kept as data so adding the Vercel or Netlify gateway
+#: later is a row, not a branch.
+BACKENDS: dict[str, dict[str, str]] = {
+    "typesafe":   {"env": "TYPESAFE_API_KEY",     "endpoint": ENDPOINT,
+                   "model": MODEL},
+    "openrouter": {"env": "OPENROUTER_API_KEY",   "endpoint": OR_ENDPOINT,
+                   "model": OR_MODEL},
+    "cloudflare": {"env": "CLOUDFLARE_API_TOKEN", "endpoint": CF_ENDPOINT,
+                   "model": CF_MODEL},
+}
 
 
 class JevError(RuntimeError):
@@ -351,12 +389,27 @@ class Client:
     """
 
     def __init__(self, api_key: str | None = None, *,
-                 endpoint: str = ENDPOINT, model: str = MODEL,
+                 endpoint: str | None = None, model: str | None = None,
                  timeout: float = 5.0, retries: int = 2,
-                 offline: bool | None = None) -> None:
-        self.api_key = api_key or os.environ.get("TYPESAFE_API_KEY") or ""
-        self.endpoint = endpoint
-        self.model = model
+                 offline: bool | None = None,
+                 backend: str = "typesafe", account_id: str | None = None) -> None:
+        spec = BACKENDS.get(backend)
+        if spec is None:
+            raise ValueError(f"unknown backend {backend!r}; "
+                             f"one of {sorted(BACKENDS)}")
+        self.backend = backend
+        self.api_key = api_key or os.environ.get(spec["env"]) or ""
+        self.model = model or spec["model"]
+        self.account_id = ""
+        if backend == "cloudflare":
+            self.account_id = (account_id
+                               or os.environ.get("CLOUDFLARE_ACCOUNT_ID") or "")
+            if self.api_key and not self.account_id:
+                raise ValueError("cloudflare backend needs CLOUDFLARE_ACCOUNT_ID")
+            self.endpoint = endpoint or spec["endpoint"].format(
+                account=self.account_id)
+        else:
+            self.endpoint = endpoint or spec["endpoint"]
         self.timeout = timeout
         self.retries = retries
         # No key, or forced: answer from the stub so the loop can be wired,
@@ -412,10 +465,18 @@ class Client:
     def _body(self, state: Any, questions: Mapping[str, Question]) -> dict:
         if not questions:
             raise ValueError("ask() needs at least one question")
-        return {"model": self.model,
+        body = {"model": self.model,
                 "state": state if isinstance(state, (str, dict, list))
                          else str(state),
                 "questions": {k: q.payload() for k, q in questions.items()}}
+        if self.backend == "cloudflare":
+            # Workers AI is the only one of the three that reshapes the call:
+            # the model id stays at the top and the rest moves under `input`.
+            return {"model": self.model,
+                    "input": {k: v for k, v in body.items() if k != "model"}}
+        # TypeSafe and OpenRouter take the same three fields, which is the
+        # whole reason switching between them is a URL and nothing else.
+        return body
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}",
@@ -428,6 +489,13 @@ class Client:
             self.stats.latencies.append(dt)
 
     def _decide(self, data: Mapping[str, Any], dt: float) -> Decision:
+        # Workers AI wraps every response in the standard Cloudflare envelope.
+        # Unwrap before parsing, and surface their error list rather than
+        # reporting "no answers" for what is really a rejected request.
+        if self.backend == "cloudflare" and "result" in data:
+            if data.get("success") is False:
+                raise JevError(f"cloudflare: {data.get('errors')}")
+            data = data.get("result") or {}
         usage = data.get("usage") or {}
         d = Decision(answers=_parse(data.get("answers") or {}),
                      model=str(data.get("model") or self.model),

@@ -525,11 +525,80 @@ def test_decide():
           str(sorted(fast.OPERATIONS)))
 
 
+def test_backends():
+    print("\n13. three ways in, one client")
+
+    check("typesafe is the default", jev.Client(api_key="k").backend == "typesafe")
+    check("unknown backend refused",
+          _raises(lambda: jev.Client(api_key="k", backend="nope"), ValueError))
+
+    # OpenRouter is the route that needs no TypeSafe invite. Its Decisions
+    # endpoint takes the same three fields, so only the URL and id change.
+    c = jev.Client(api_key="or-key", backend="openrouter")
+    check("openrouter endpoint", c.endpoint.endswith("/api/v1/systemone"), c.endpoint)
+    check("openrouter model id", c.model == "jev-1.13", c.model)
+    http = FakeHTTP(ok({"q": {"type": "noul", "noul": 0.77}}))
+    c._http = lambda: http
+    d = c.ask("s", {"q": jev.Noul("?")})
+    check("openrouter body is flat", set(http.sent[0]) == {"model", "state",
+                                                           "questions"},
+          str(sorted(http.sent[0])))
+    check("openrouter answers parse", d["q"].p == 0.77)
+    check("not the chat endpoint", "chat/completions" not in c.endpoint)
+
+    # Workers AI is the one that reshapes the call, both ways.
+    c = jev.Client(api_key="cf-token", backend="cloudflare", account_id="acct123")
+    check("cloudflare endpoint carries the account",
+          "acct123" in c.endpoint and c.endpoint.endswith("/ai/run"), c.endpoint)
+    check("cloudflare model id", c.model == "typesafe/jev", c.model)
+    check("cloudflare needs an account id",
+          _raises(lambda: jev.Client(api_key="cf", backend="cloudflare",
+                                     account_id=""), ValueError))
+
+    wrapped = FakeResponse(200, {"success": True, "errors": [],
+                                 "result": {"model": "jev-1.13.0",
+                                            "answers": {"q": {"type": "noul",
+                                                              "noul": 0.42}},
+                                            "usage": {"input_tokens": 100,
+                                                      "output_tokens": 9}}})
+    http = FakeHTTP(wrapped)
+    c._http = lambda: http
+    d = c.ask("s", {"q": jev.Noul("?")})
+    check("cloudflare body is wrapped", set(http.sent[0]) == {"model", "input"},
+          str(sorted(http.sent[0])))
+    check("state moved under input", "state" in http.sent[0]["input"])
+    check("cloudflare envelope unwrapped", d["q"].p == 0.42)
+    check("tokens still counted", d.input_tokens == 100)
+
+    failed = FakeResponse(200, {"success": False,
+                                "errors": [{"message": "no billing"}],
+                                "result": None})
+    c._http = lambda: FakeHTTP(failed)
+    check("cloudflare errors surface, not silence",
+          _raises(lambda: c.ask("s", {"q": jev.Noul("?")}), jev.JevError))
+
+    # Every backend still escalates rather than guessing when unconfigured.
+    for name in ("typesafe", "openrouter"):
+        check(f"{name} with no key is offline",
+              jev.Client(api_key="", backend=name).offline)
+
+
+def _raises(fn, exc) -> bool:
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+
 def main() -> int:
     print("System-1 decisions (jev + fast)")
     for t in (test_questions, test_parsing, test_transport, test_offline_stub,
               test_pick, test_commit_guard, test_staleness, test_state_budget,
-              test_rerank, test_verify, test_adversarial_state, test_decide):
+              test_rerank, test_verify, test_adversarial_state, test_decide,
+              test_backends):
         t()
     passed = sum(1 for _, o, _ in results if o)
     print(f"\n{passed}/{len(results)} passed")
