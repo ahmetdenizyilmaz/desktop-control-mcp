@@ -359,6 +359,12 @@ def test_staleness():
     check("a steady screen is acted on", t.ok and seen == [0], f"{t.note} {seen}")
 
     check("fingerprint is stable", fast.fingerprint(ROWS) == fast.fingerprint(list(ROWS)))
+    # A filled field IS a changed screen, even though the control table is
+    # otherwise identical — the bug that made every `type` report as a no-op.
+    filled = [dict(r) for r in ROWS]
+    filled[1]["value"] = "Istanbul"
+    check("a filled field counts as a change",
+          fast.fingerprint(ROWS) != fast.fingerprint(filled))
     check("fingerprint notices a change",
           fast.fingerprint(ROWS) != fast.fingerprint(moved))
 
@@ -473,7 +479,7 @@ def test_decide():
     print("\n12. operation and target in one round trip")
 
     c, http = wired(ok({"op": choice_ans({"click": 0.95, "wait": 0.05}, 0.95),
-                        "pick": choice_ans({"0": 0.93, "none": 0.07}, 0.93),
+                        "click_target": choice_ans({"0": 0.93, "none": 0.07}, 0.93),
                         "blocker": choice_ans({"nothing": 0.97}, 0.97),
                         "commit": {"type": "noul", "noul": 0.02}}))
     m = fast.decide("find the morning departures", ROWS, window="Tickets",
@@ -482,13 +488,14 @@ def test_decide():
     check("operation chosen", m.operation == "click", m.operation)
     check("target chosen", m.index == 0, str(m.index))
     check("may act", m.verdict.act, m.verdict.why)
-    check("four questions sent", len(http.sent[0]["questions"]) == 4,
+    check("op + blocker + commit + per-op target heads",
+          set(http.sent[0]["questions"]) >= {"op", "blocker", "commit", "click_target"},
           str(list(http.sent[0]["questions"])))
 
     # "Not on screen yet" is a decision, not a failure — and it is the one a
     # control table on its own cannot express.
     c, _ = wired(ok({"op": choice_ans({"scroll_down": 0.9, "click": 0.1}, 0.9),
-                     "pick": choice_ans({"0": 0.4, "none": 0.6}, 0.4),
+                     "click_target": choice_ans({"0": 0.4, "none": 0.6}, 0.4),
                      "blocker": choice_ans({"nothing": 0.9}, 0.9),
                      "commit": {"type": "noul", "noul": 0.01}}))
     m = fast.decide("find the morning departures", ROWS, client=c)
@@ -498,7 +505,7 @@ def test_decide():
     check("needs_target is honest", not m.needs_target)
 
     c, _ = wired(ok({"op": choice_ans({"wait": 0.92, "click": 0.08}, 0.92),
-                     "pick": choice_ans({"0": 0.5, "none": 0.5}, 0.5),
+                     "click_target": choice_ans({"0": 0.5, "none": 0.5}, 0.5),
                      "blocker": choice_ans({"loading": 0.88, "nothing": 0.12}, 0.88),
                      "commit": {"type": "noul", "noul": 0.01}}))
     m = fast.decide("find the morning departures", ROWS, client=c)
@@ -507,7 +514,7 @@ def test_decide():
 
     # The guard still applies inside the combined call.
     c, _ = wired(ok({"op": choice_ans({"click": 0.95}, 0.95),
-                     "pick": choice_ans({"3": 0.95, "none": 0.05}, 0.95),
+                     "click_target": choice_ans({"3": 0.95, "none": 0.05}, 0.95),
                      "blocker": choice_ans({"nothing": 0.9}, 0.9),
                      "commit": {"type": "noul", "noul": 0.01}}))
     m = fast.decide("press the highlighted control", ROWS, client=c)
@@ -543,7 +550,7 @@ def test_decide():
     c, _ = wired(ok({"op": choice_ans({"done": 0.74, "type": 0.13,
                                        "submit": 0.07, "scroll_down": 0.06},
                                       0.74),
-                     "pick": choice_ans({"none": 0.9}, 0.9),
+                     "click_target": choice_ans({"none": 0.9}, 0.9),
                      "blocker": choice_ans({"nothing": 0.93}, 0.93),
                      "commit": {"type": "noul", "noul": 0.01}}))
     m = fast.decide("search for milk and show the products", ROWS, client=c)
@@ -552,7 +559,7 @@ def test_decide():
 
     # The same confidence on a click does not get through.
     c, _ = wired(ok({"op": choice_ans({"click": 0.74, "wait": 0.26}, 0.74),
-                     "pick": choice_ans({"0": 0.95, "none": 0.05}, 0.95),
+                     "click_target": choice_ans({"0": 0.95, "none": 0.05}, 0.95),
                      "blocker": choice_ans({"nothing": 0.9}, 0.9),
                      "commit": {"type": "noul", "noul": 0.01}}))
     m = fast.decide("find the morning departures", ROWS, client=c)
@@ -620,6 +627,72 @@ def test_backends():
               jev.Client(api_key="", backend=name).offline)
 
 
+def test_target_heads():
+    print("\n14. one target head per operation, and page_changed")
+
+    check("a button only clicks", fast.supports(ROWS[0]) == {"click"},
+          str(fast.supports(ROWS[0])))
+    check("an edit field also types", fast.supports(ROWS[1]) == {"click", "type"},
+          str(fast.supports(ROWS[1])))
+    check("a select selects, not types",
+          fast.supports({"type": "select", "name": "x"}) == {"click", "select"},
+          str(fast.supports({"type": "select", "name": "x"})))
+
+    c, http = wired(ok({"op": choice_ans({"type": 0.95, "click": 0.05}, 0.95),
+                        "click_target": choice_ans({"0": 0.9, "none": 0.1}, 0.9),
+                        "type_target": choice_ans({"1": 0.94, "none": 0.06}, 0.94),
+                        "blocker": choice_ans({"nothing": 0.9}, 0.9),
+                        "commit": {"type": "noul", "noul": 0.02}}))
+    m = fast.decide("put the origin in", ROWS, client=c)
+    sent = http.sent[0]["questions"]
+    check("a head per operation present",
+          {"click_target", "type_target"} <= set(sent), str(sorted(sent)))
+    check("no select head — nothing selectable", "select_target" not in sent)
+    check("still one round trip", len(http.sent) == 1)
+
+    # The type head holds only the two Edit rows, not the buttons.
+    tgt = sent["type_target"]["criteria"]
+    check("type head is filtered", set(tgt) == {"1", "2", "none"}, str(sorted(tgt)))
+    check("click head has everything", len(sent["click_target"]["criteria"]) == 5,
+          str(len(sent["click_target"]["criteria"])))
+
+    check("read back the matching head", m.operation == "type" and m.index == 1,
+          m.line())
+
+    # An operation nothing supports must not silently pick from another head.
+    c, _ = wired(ok({"op": choice_ans({"select": 0.95}, 0.95),
+                     "click_target": choice_ans({"0": 0.99, "none": 0.01}, 0.99),
+                     "blocker": choice_ans({"nothing": 0.9}, 0.9),
+                     "commit": {"type": "noul", "noul": 0.02}}))
+    m = fast.decide("choose a fare", ROWS, client=c)
+    check("unsupported operation holds", m.index is None and not m.verdict.act,
+          m.line())
+    check("and says why", "supports it" in m.verdict.why, m.verdict.why)
+
+    # page_changed: the cheap half of verification, no round trip.
+    moved = ROWS + [{"type": "Dialog", "name": "Delivery method", "id": "d"}]
+    e1 = fast.did("click", "Sepete Ekle", ROWS, moved)
+    e2 = fast.did("click", "Sepete Ekle", ROWS, ROWS)
+    check("a change is recorded", e1["changed"] is True, str(e1))
+    check("a no-op is recorded", e2["changed"] is False, str(e2))
+    check("the action is named", e1["action"] == "click Sepete Ekle", str(e1))
+
+    c, http = wired(ok({"op": choice_ans({"done": 0.9}, 0.9),
+                        "blocker": choice_ans({"nothing": 0.9}, 0.9),
+                        "commit": {"type": "noul", "noul": 0.02}}))
+    fast.decide("buy it", ROWS, history=[e2], client=c)
+    check("history reaches the state",
+          http.sent[0]["state"]["already_done"] == [e2],
+          str(http.sent[0]["state"].get("already_done")))
+    check("the model is told what changed means",
+          "changed=false" in json_dumps(http.sent[0]["questions"]["op"]))
+
+
+def json_dumps(o) -> str:
+    import json
+    return json.dumps(o, ensure_ascii=False)
+
+
 def _raises(fn, exc) -> bool:
     try:
         fn()
@@ -635,7 +708,7 @@ def main() -> int:
     for t in (test_questions, test_parsing, test_transport, test_offline_stub,
               test_pick, test_commit_guard, test_staleness, test_state_budget,
               test_rerank, test_verify, test_adversarial_state, test_decide,
-              test_backends):
+              test_backends, test_target_heads):
         t()
     passed = sum(1 for _, o, _ in results if o)
     print(f"\n{passed}/{len(results)} passed")

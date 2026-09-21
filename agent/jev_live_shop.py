@@ -154,30 +154,32 @@ def pursue(b, c, goal: str, typed: str, history: list[str]) -> bool:
         if not r.get("ok"):
             return False
 
-        # Did it actually work?
+        # Did the screen respond?
         #
         # Playwright reporting a successful click means the click LANDED, not
         # that it achieved anything. On migros.com.tr, clicking "Sepete Ekle"
         # landed and opened a "choose a delivery method" modal; the basket
-        # stayed empty, `already_done` said the click had happened, and the
-        # next decision answered `done` at 0.99. Confidently wrong, because
+        # stayed empty, and the next decision answered `done` at 0.99 because
         # nothing in the state ever contradicted it.
         #
-        # So the page is re-read and compared. An action that changed nothing
-        # is recorded as having changed nothing, and the model is told.
+        # This was a second Jev call — `fast.worked()`, ~400ms. It is now a
+        # fingerprint comparison costing microseconds, following
+        # `jev-ultrafast`: the result rides along in `already_done` as
+        # `changed`, and the model reads it next turn beside the new state
+        # and the blocker question. One call per step instead of two.
+        #
+        # `worked()` still exists for steps where being wrong is expensive.
         time.sleep(1.5)
         after_rows, _ = rows_from_snapshot(b.snapshot(limit=120))
-        v = fast.worked(f"{m.operation} {target}", rows, after_rows, client=c)
-        note = "" if v.act else "  (did NOT appear to work)"
-        print(f"        verify: {v.why}{note}")
+        entry = fast.did(m.operation, target if target != "-" else "",
+                         rows, after_rows)
+        print(f"        changed: {entry['changed']}")
+        history.append(entry)
 
-        history.append((f"{m.operation} {target}" if target != "-"
-                        else m.operation) + note)
-        if not v.act:
-            # Two ways this goes wrong: the action was a no-op, or something
-            # is now in the way. Either is Claude's problem, not a loop's.
-            print("        the page did not respond as the step intended — "
-                  "handing back")
+        # Two no-ops running is not a loop that is about to recover.
+        recent_noop = [h for h in history[-2:] if isinstance(h, dict)]
+        if len(recent_noop) == 2 and not any(h["changed"] for h in recent_noop):
+            print("        two actions in a row changed nothing — handing back")
             return False
 
         # A loop choosing the same move is not progressing, whatever the page

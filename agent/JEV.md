@@ -475,6 +475,69 @@ python jev_log.py --unsure 0.8      # just the moments it hesitated
 python jev_log.py --state --full    # everything it was shown
 ```
 
+## 13. What each parser sees, and the jev-ultrafast changes
+
+### Three parsers, one page, one moment
+
+`parser_compare.py` against migros.com.tr, same instant:
+
+| parser | rows | time | Jev's decision |
+|---|---|---|---|
+| **DOM** (`browser.snapshot`) | 129 | **44 ms** | **ACT** · `type` · conf **1.00** · `'Arama alanı'` |
+| UIA (browser window) | 200 | 804 ms | HOLD · conf 0.75 |
+| OCR (Florence-2) | 1 | 16,993 ms | HOLD · conf 0.64 |
+
+All three behaved *correctly given what they were shown*. UIA's best answer
+was `EditControl: Address and search bar` at 0.56 — Chrome's URL bar, because
+the 200-row budget filled with window furniture before reaching the page.
+OCR answered `none` at 0.98, its one garbled line being useless.
+
+**Decision quality is a direct function of parser quality**: same model, same
+question, same instant, 1.00 vs 0.56 vs none. Inside a browser, use the DOM;
+UIA is for desktop apps and sees a browser as chrome.
+
+### The changes taken from jev-ultrafast
+
+**Per-operation target heads.** One `pick` question over every element has to
+answer even when the operation needs no target, so it emits noise that is
+computed and paid for:
+
+```
+op=submit 0.87 | pick='none'        0.50
+op=done   0.94 | pick='Arama alanı' 0.53
+```
+
+Now each operation gets its own head holding only the elements that support
+it — `click_target` over everything, `type_target` over fields only,
+`select_target` over dropdowns, and none at all when nothing qualifies. All
+are asked in the same call and only the winner's head is read.
+
+**`page_changed`, replacing the verification call.** `fast.worked()` was a
+second round trip per step at ~400ms. `fast.did()` compares fingerprints in
+microseconds and the result rides along in `already_done` as `changed`, which
+the model reads next turn beside the new state and the blocker question.
+
+| | before | after |
+|---|---|---|
+| Jev calls per step | 2 | **1** |
+| calls for the 3-goal run | 11 | **8** |
+| p50 | 453 ms | **344 ms** |
+| cost | $0.0024 | $0.0016 |
+
+**The safety property survived.** Goal 3 clicked "Sepete Ekle", recorded
+`changed: false`, and the next decision answered `blocked` — not `done` at
+0.99 as it did before any verification existed. The free check caught what
+the 400ms call caught.
+
+`worked()` is kept for steps where being wrong is expensive; it is a stronger
+signal, since `changed` says the screen moved, not that the step achieved its
+purpose.
+
+**A bug the live run found:** `fingerprint()` hashed type, name and id but
+not `value`, so filling a field was invisible and every `type` action
+reported `changed=false` — telling the model its own successful typing had
+achieved nothing. Fixed; `value` is in the hash.
+
 ## Sources
 
 - https://docs.typesafe.ai — API reference, primitives, models, patterns

@@ -254,6 +254,26 @@ def window_candidates(hwnd: int, cap: int = MAX_ROWS
     return elements_to_rows(els), els
 
 
+def did(operation: str, target: str, before: Sequence[Mapping[str, Any]],
+        after: Sequence[Mapping[str, Any]]) -> dict:
+    """One history entry, carrying whether the screen actually changed.
+
+    This is the cheap half of verification, and `jev-ultrafast` gets it for
+    free by putting `page_changed` on every recent action. It costs a
+    fingerprint comparison — microseconds — where `worked()` costs a whole
+    round trip.
+
+    It is a weaker signal, and deliberately so: it says the screen moved, not
+    that the step achieved its purpose. What makes it enough in practice is
+    that it travels *with* the new state and the blocker question in the same
+    call, so a click that opened a modal shows up as changed=true plus a
+    blocker of `modal` — which is the Sepete Ekle failure, caught without the
+    second call. Where being wrong is expensive, call `worked()` as well.
+    """
+    return {"action": f"{operation} {target}".strip(),
+            "changed": fingerprint(before) != fingerprint(after)}
+
+
 def fingerprint(rows: Sequence[Mapping[str, Any]]) -> str:
     """Cheap identity for a screen state.
 
@@ -265,8 +285,13 @@ def fingerprint(rows: Sequence[Mapping[str, Any]]) -> str:
     checkout button is not.
     """
     import hashlib
+    # `value` belongs in here. Without it, filling a field is invisible: the
+    # control table is identical before and after, so a `type` action always
+    # reported changed=false and told the model its own successful typing had
+    # achieved nothing. Measured on migros.com.tr — the search box was filled
+    # correctly and recorded as a no-op.
     blob = "\n".join(f"{r.get('type','')}|{r.get('name','')}|{r.get('id','')}"
-                     for r in rows)
+                     f"|{r.get('value','')}" for r in rows)
     return hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()[:16]
 
 
@@ -411,11 +436,74 @@ def q_operation(intent: str) -> jev.Choice:
         instructions={"goal": intent,
                       "task": "What kind of action moves this goal forward "
                               "right now?",
-                      "note": "`already_done` lists actions that have "
-                              "ALREADY been carried out for this goal. Do "
-                              "not repeat one. If the goal has been achieved, "
-                              "answer 'done'."},
+                      "note": "`already_done` lists actions ALREADY carried "
+                              "out for this goal, oldest first. Do not repeat "
+                              "one. Each records `changed`: whether the "
+                              "screen changed as a result. An action with "
+                              "changed=false achieved nothing — do not "
+                              "conclude the goal is done because it was "
+                              "attempted. If the goal is visibly achieved in "
+                              "the CURRENT screen, answer 'done'."},
         criteria=dict(OPERATIONS))
+
+
+#: Element types that accept typed text, and ones that are a dropdown.
+#: Matched as substrings against the row's `type`, which is a DOM role/tag on
+#: a page and a UIA ControlTypeName on the desktop — hence both spellings.
+_TYPEABLE = ("input", "textarea", "textbox", "searchbox", "combobox",
+             "edit", "contenteditable", "spinbutton")
+_SELECTABLE = ("select", "listbox", "dropdown")
+
+
+def supports(row: Mapping[str, Any]) -> set[str]:
+    """Which operations this element can actually take.
+
+    A text field cannot be scrolled and a link cannot be typed into, so
+    offering every element to every operation asks the model to rule out
+    things the DOM already ruled out. Cheap to compute, and it is what makes
+    per-operation target heads worth having.
+    """
+    t = str(row.get("type", "")).lower()
+    ops = {"click"}
+    if any(k in t for k in _TYPEABLE):
+        ops.add("type")
+    if any(k in t for k in _SELECTABLE):
+        ops.add("select")
+        ops.discard("type")
+    return ops
+
+
+def q_target(intent: str, operation: str,
+             indexed: Sequence[tuple[int, Mapping[str, Any]]]) -> jev.Choice:
+    """"Given that the next action is a CLICK, which element?"
+
+    One head per operation, each holding only the elements that operation can
+    act on. This is Browser Use's design in `jev-ultrafast`, and it fixes a
+    real defect in asking one question over everything: a single target head
+    has to answer even when the chosen operation needs no target, so it
+    produces noise. Measured on migros.com.tr with the old single head:
+
+        op=submit 0.87 | pick='none'        0.50
+        op=done   0.94 | pick='Arama alanı' 0.53
+
+    Both target answers are meaningless, and both were computed and paid for.
+    Conditioning the question on the operation removes them.
+    """
+    criteria: dict[str, str | None] = {}
+    for i, r in indexed:
+        name = (r.get("name") or "").strip()
+        t = (r.get("type") or "").strip()
+        label = f"{t}: {name}" if name else f"{t} (unnamed)"
+        if r.get("value"):
+            label += f"  [currently: {str(r['value'])[:30]}]"
+        criteria[str(i)] = label
+    criteria["none"] = ("No element here is right for this operation")
+    return jev.Choice(
+        instructions={"goal": intent, "operation": operation,
+                      "task": "If the next action is this operation, which "
+                              "element should it act on? Answer with the "
+                              "index, or 'none'."},
+        criteria=criteria)
 
 
 # --------------------------------------------------------------------------
@@ -494,10 +582,21 @@ def decide(intent: str, rows: Sequence[Mapping[str, Any]], *,
     """
     c = client or jev.client()
     qs: dict[str, jev.Question] = {"op": q_operation(intent),
-                                   "pick": q_pick(intent, rows),
                                    "blocker": q_blocker()}
     if guard:
         qs["commit"] = q_commit(intent)
+
+    # One target head per operation, holding only the elements that operation
+    # can act on — `jev-ultrafast`'s speculative fan-out. All of them are
+    # asked at once and only the one matching the chosen operation is read;
+    # the rest cost their question tokens and almost no wall clock, because
+    # independent questions evaluate in parallel against the same state.
+    heads: dict[str, list[tuple[int, Mapping[str, Any]]]] = {}
+    for i, r in enumerate(rows[:MAX_ROWS]):
+        for op in supports(r):
+            heads.setdefault(op, []).append((i, r))
+    for op, indexed in heads.items():
+        qs[f"{op}_target"] = q_target(intent, op, indexed)
 
     try:
         d = c.ask(rows_to_state(rows, window=window, history=history), qs)
@@ -532,7 +631,13 @@ def decide(intent: str, rows: Sequence[Mapping[str, Any]], *,
     if operation not in {"click", "type", "select"}:
         return Move(operation, None, op_v, blocker)
 
-    pick_v = _gate(d, "pick", at, margin)
+    # Read back only the head belonging to the operation that won.
+    key = f"{operation}_target"
+    if key not in d.answers:
+        return Move(operation, None,
+                    Verdict(False, f"{operation!r} chosen but no element on "
+                                   f"this page supports it", a_op, d), blocker)
+    pick_v = _gate(d, key, at, margin)
     if not pick_v.act:
         return Move(operation, None, pick_v, blocker)
     choice = getattr(pick_v.answer, "choice", "")
