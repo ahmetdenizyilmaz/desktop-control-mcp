@@ -156,6 +156,7 @@ def _gate(d: jev.Decision, key: str, at: float,
 
 def rows_to_state(rows: Sequence[Mapping[str, Any]], *,
                   window: str = "", extra: Mapping[str, Any] | None = None,
+                  history: Sequence[str] | None = None,
                   cap: int = MAX_ROWS) -> dict:
     """Turn a control table into the JSON Jev reads.
 
@@ -183,6 +184,20 @@ def rows_to_state(rows: Sequence[Mapping[str, Any]], *,
             row["hint"] = r["hint"]
         out.append(row)
     state: dict[str, Any] = {"window": window, "controls": out}
+    # What has already been done, most recent last.
+    #
+    # Jev has no conversational memory — it sees this state and nothing else.
+    # Without a history, a goal phrased as an action ("type süt into the
+    # search box") is answered correctly *again* every time the box happens
+    # to be empty, which on a results page it is. Measured on migros.com.tr:
+    # the loop searched successfully, navigated, saw an empty box and typed
+    # the same word straight back into it.
+    #
+    # This is also the cheapest way to express progress. The alternative is
+    # goals phrased purely as end states, which works but puts the burden on
+    # whoever writes the plan.
+    if history:
+        state["already_done"] = list(history)[-6:]
     if len(rows) > cap:
         state["truncated"] = len(rows) - cap
     if extra:
@@ -383,7 +398,11 @@ def q_operation(intent: str) -> jev.Choice:
     return jev.Choice(
         instructions={"goal": intent,
                       "task": "What kind of action moves this goal forward "
-                              "right now?"},
+                              "right now?",
+                      "note": "`already_done` lists actions that have "
+                              "ALREADY been carried out for this goal. Do "
+                              "not repeat one. If the goal has been achieved, "
+                              "answer 'done'."},
         criteria=dict(OPERATIONS))
 
 
@@ -446,7 +465,8 @@ class Move:
 
 def decide(intent: str, rows: Sequence[Mapping[str, Any]], *,
            window: str = "", at: float = CONFIDENT, margin: float = MARGIN,
-           guard: bool = True, client: jev.Client | None = None) -> Move:
+           guard: bool = True, history: Sequence[str] | None = None,
+           client: jev.Client | None = None) -> Move:
     """Operation, target, guard and blocker — one state, one round trip.
 
     This is the shape Browser Use arrived at for `jev-ultrafast`, and it is
@@ -468,7 +488,7 @@ def decide(intent: str, rows: Sequence[Mapping[str, Any]], *,
         qs["commit"] = q_commit(intent)
 
     try:
-        d = c.ask(rows_to_state(rows, window=window), qs)
+        d = c.ask(rows_to_state(rows, window=window, history=history), qs)
     except jev.JevError as e:
         return Move("blocked", None, Verdict(False, f"no decision: {e}"))
 

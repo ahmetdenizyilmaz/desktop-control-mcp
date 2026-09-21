@@ -383,6 +383,68 @@ logged-in session with items in it. Until that is run, the guard is verified
 against intents and against a results page, not against the page that
 actually matters.
 
+## 12. A real shopping run, 2026-09-21
+
+Four goals in sequence — the architecture the branch argues for, with Claude
+writing the plan and Jev executing each step:
+
+```
+GOAL 1  type süt into the search box and run the search
+  481ms  type   'Arama alanı'   ->  filled
+  481ms  submit                 ->  pressed Enter
+  463ms  done                       goal reached
+GOAL 2  open the product page of the first milk product
+  351ms  click  'Torku Laktozsuz Süt 1 L'
+  333ms  done
+GOAL 3  add this product to the shopping basket
+  456ms  click  'Sepete Ekle'
+  509ms  done
+GOAL 4  go to the shopping basket
+  357ms  click  'Sepetim'   ->  Playwright click timed out (8s)
+
+9 calls, 0 failed, p50 453ms, 42k tokens, $0.0018
+```
+
+Three goals of four, end to end, for less than a fifth of a cent. Goal 4's
+failure was in Playwright, not in the decision — `Sepetim` was the right
+target, and something (most likely the "added to basket" toast) sat over it.
+
+**Action history had to be added to the state.** Jev has no conversational
+memory: it sees the state and nothing else. The first attempt searched
+successfully, navigated to the results, found the search box empty again and
+typed "süt" straight back into it — because for the goal as written, typing
+*was* the correct answer. `rows_to_state(history=...)` now carries the last
+six actions as `already_done`, and `q_operation` is told what that field
+means. With it, step 3 answers `done` at 0.95.
+
+**The guard's gradient, read back out of the journal:**
+
+| action | p(needs asking first) |
+|---|---|
+| type in the search box | 0.07 |
+| click a product | 0.08 |
+| click "Sepetim" (view basket) | 0.11 |
+| **click "Sepete Ekle" (add to basket)** | **0.24** |
+| *`COMMIT_STOP`* | *0.30* |
+
+Adding to the basket reads as three times more commit-like than browsing and
+still, correctly, as reversible. That ordering is the calibration claim doing
+something useful rather than merely being asserted.
+
+### The journal
+
+`JEV_LOG=logs/migros.jsonl` makes `core/jev.py` write every call verbatim —
+state, questions, and the full probability distribution over every option.
+Jev gives no rationale, so this is the only forensic trail a wrong decision
+leaves, and a summary would throw away exactly the runner-up that explains
+it. `jev_log.py` reads it back:
+
+```
+python jev_log.py --file logs/migros.jsonl --only op,pick
+python jev_log.py --unsure 0.8      # just the moments it hesitated
+python jev_log.py --state --full    # everything it was shown
+```
+
 ## Sources
 
 - https://docs.typesafe.ai — API reference, primitives, models, patterns

@@ -71,3 +71,6 @@ agent/bist30page_files/
 build/
 dist/
 litellm-venv/
+
+# Jev decision journals.
+agent/logs/

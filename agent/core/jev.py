@@ -52,6 +52,7 @@ import os
 import random
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -402,7 +403,8 @@ class Client:
                  endpoint: str | None = None, model: str | None = None,
                  timeout: float = 5.0, retries: int = 2,
                  offline: bool | None = None,
-                 backend: str = "typesafe", account_id: str | None = None) -> None:
+                 backend: str = "typesafe", account_id: str | None = None,
+                 log: str | Path | None = None) -> None:
         spec = BACKENDS.get(backend)
         if spec is None:
             raise ValueError(f"unknown backend {backend!r}; "
@@ -427,6 +429,10 @@ class Client:
         env_off = os.environ.get("JEV_OFFLINE", "").strip().lower() in {"1", "true", "yes"}
         self.offline = (not self.api_key) if offline is None else offline
         self.offline = self.offline or env_off
+        # Every call is journalled when this is set, so a decision can be
+        # inspected long after the Decision object is gone. JEV_LOG sets it
+        # for a whole run without touching any call site.
+        self.log_path = log or os.environ.get("JEV_LOG") or ""
         self.stats = Stats()
         self._lock = threading.Lock()
         self._recent: list[float] = []
@@ -520,7 +526,49 @@ class Client:
             self.stats.input_tokens += tokens
             self.stats.latencies.append(dt)
 
-    def _decide(self, data: Mapping[str, Any], dt: float) -> Decision:
+    def _log(self, body: Mapping[str, Any], data: Mapping[str, Any],
+             dt: float, error: str = "") -> None:
+        """Append one call to a JSONL journal, exactly as it went and came back.
+
+        Jev returns no rationale. When a decision turns out wrong, the full
+        probability distribution over every option is the *only* evidence of
+        why — and it is gone the moment the Decision is discarded. So the
+        state, the questions and the raw answers are all kept verbatim, not
+        summarised: a summary throws away precisely the runner-up that
+        explains the mistake.
+
+        One JSON object per line, so it can be read with `jev_log.py`, grepped,
+        or loaded into anything. Failures are written too, with `error` set —
+        a call that never answered is usually the interesting one.
+        """
+        if not self.log_path:
+            return
+        import datetime as _dt
+        rec = {
+            "t": _dt.datetime.now().isoformat(timespec="milliseconds"),
+            "backend": self.backend,
+            "model": data.get("model") or self.model,
+            "latency_ms": round(dt * 1000),
+            "state": body.get("state") if "state" in body
+                     else (body.get("input") or {}).get("state"),
+            "questions": body.get("questions") if "questions" in body
+                         else (body.get("input") or {}).get("questions"),
+            "answers": data.get("answers") or {},
+            "usage": data.get("usage") or {},
+        }
+        if error:
+            rec["error"] = error
+        try:
+            p = Path(self.log_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            # A journal that cannot be written must never take a task down.
+            pass
+
+    def _decide(self, data: Mapping[str, Any], dt: float,
+                body: Mapping[str, Any] | None = None) -> Decision:
         # Workers AI wraps every response in the standard Cloudflare envelope.
         # Unwrap before parsing, and surface their error list rather than
         # reporting "no answers" for what is really a rejected request.
@@ -528,6 +576,8 @@ class Client:
             if data.get("success") is False:
                 raise JevError(f"cloudflare: {data.get('errors')}")
             data = data.get("result") or {}
+        if body is not None:
+            self._log(body, data, dt)
         usage = data.get("usage") or {}
         d = Decision(answers=_parse(data.get("answers") or {}),
                      model=str(data.get("model") or self.model),
@@ -551,7 +601,11 @@ class Client:
         """
         body = self._body(state, questions)
         if self.offline:
-            return _stub(body, self.model)
+            d = _stub(body, self.model)
+            self._log(body, {"model": d.model, "answers": {},
+                             "usage": {"input_tokens": d.input_tokens}}, 0.0,
+                      error="offline stub — not a real decision")
+            return d
 
         self._gate()
         last: Exception | None = None
@@ -566,7 +620,7 @@ class Client:
             else:
                 dt = time.monotonic() - t0
                 if r.status_code == 200:
-                    return self._decide(r.json(), dt)
+                    return self._decide(r.json(), dt, body)
                 if r.status_code == 422:
                     raise JevRefused(f"422: {r.text[:300]}")
                 if r.status_code == 401:
@@ -604,7 +658,7 @@ class Client:
             else:
                 dt = time.monotonic() - t0
                 if r.status_code == 200:
-                    return self._decide(r.json(), dt)
+                    return self._decide(r.json(), dt, body)
                 if r.status_code == 422:
                     raise JevRefused(f"422: {r.text[:300]}")
                 if r.status_code == 401:
