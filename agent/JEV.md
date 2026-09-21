@@ -405,9 +405,39 @@ GOAL 4  go to the shopping basket
 9 calls, 0 failed, p50 453ms, 42k tokens, $0.0018
 ```
 
-Three goals of four, end to end, for less than a fifth of a cent. Goal 4's
-failure was in Playwright, not in the decision — `Sepetim` was the right
-target, and something (most likely the "added to basket" toast) sat over it.
+**Correction, after looking at the screenshots: the milk was never added to
+the basket.** The frame taken right after "Sepete Ekle" shows `Sepetim
+0,00 TL` with a 0 badge, the button greyed out, and a *"Teslimat Yöntemini
+Belirle"* modal over the page — Migros wants a delivery method chosen before
+anything can go in a basket. The run was read as a success from `op=done`
+and nobody checked the page. That mistake is the most useful thing in this
+document.
+
+Why the model was confidently wrong, at 0.99:
+
+- Playwright reported the click succeeded, which means it **landed**, not
+  that it achieved anything. It landed and opened a modal.
+- `already_done` then read "click Sepete Ekle", so from the state the goal
+  looked accomplished.
+- **Nothing in the state ever said the basket was still empty.**
+- The `blocker` head answered `nothing` every single time, because it was
+  phrased *"The expected control is not here. What is on screen instead?"* —
+  which scopes it to a missing target. The target was present. A question
+  that only fires once something else has already gone wrong is not a guard.
+
+Two fixes, both in `fast.py`:
+
+`q_blocker` now asks about the whole screen — "is anything standing between
+the user and the task" — and has a `modal` option for exactly this case.
+
+**Verification is wired into the loop.** `fast.worked()` existed from the
+start and was never called: every action is now followed by a re-read and a
+before/after noul. On the re-run it reads `p(worked)=0.92` for the search,
+`0.86` for submit, `0.93` for opening the product, and **`0.13` for "Sepete
+Ekle"** — where the loop stops and hands back instead of reporting success.
+
+The rule this cost: **an action that a framework reports as "ok" has not been
+verified.** Only the page can say that.
 
 **Action history had to be added to the state.** Jev has no conversational
 memory: it sees the state and nothing else. The first attempt searched

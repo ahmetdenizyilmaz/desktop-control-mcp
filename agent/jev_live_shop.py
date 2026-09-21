@@ -39,6 +39,11 @@ from core import fast, jev               # noqa: E402
 
 MAX_STEPS = 6
 
+#: Where a frame per step lands, when --shots is passed. The journal records
+#: what the model thought; these record what it was looking at, and the two
+#: together are what makes a wrong decision diagnosable after the fact.
+SHOTS: Path | None = None
+
 PLAN = [
     "type milk (süt) into the site search box and run the search",
     "open the product page of the first milk product in the results",
@@ -132,13 +137,48 @@ def pursue(b, c, goal: str, typed: str, history: list[str]) -> bool:
             r = {"ok": False, "error": f"no handler for {m.operation}"}
 
         print(f"        -> {r.get('did') or r.get('error')}")
+
+        # A frame per step, named for the decision that produced it. The
+        # journal says what it thought; these say what it was looking at.
+        if SHOTS:
+            SHOTS.mkdir(parents=True, exist_ok=True)
+            safe = "".join(ch if ch.isalnum() or ch in " -_" else "_"
+                           for ch in target)[:34].strip()
+            name = f"{len(history):02d}-{m.operation}-{safe or 'none'}.png"
+            try:
+                b._ensure().screenshot(path=str(SHOTS / name))
+                print(f"        shot: {name}")
+            except Exception as e:
+                print(f"        shot failed: {e}")
+
         if not r.get("ok"):
             return False
 
-        # Record what was actually carried out, in the model's own words for
-        # the operation and the page's words for the target.
-        history.append(f"{m.operation} {target}" if target != "-"
-                       else m.operation)
+        # Did it actually work?
+        #
+        # Playwright reporting a successful click means the click LANDED, not
+        # that it achieved anything. On migros.com.tr, clicking "Sepete Ekle"
+        # landed and opened a "choose a delivery method" modal; the basket
+        # stayed empty, `already_done` said the click had happened, and the
+        # next decision answered `done` at 0.99. Confidently wrong, because
+        # nothing in the state ever contradicted it.
+        #
+        # So the page is re-read and compared. An action that changed nothing
+        # is recorded as having changed nothing, and the model is told.
+        time.sleep(1.5)
+        after_rows, _ = rows_from_snapshot(b.snapshot(limit=120))
+        v = fast.worked(f"{m.operation} {target}", rows, after_rows, client=c)
+        note = "" if v.act else "  (did NOT appear to work)"
+        print(f"        verify: {v.why}{note}")
+
+        history.append((f"{m.operation} {target}" if target != "-"
+                        else m.operation) + note)
+        if not v.act:
+            # Two ways this goes wrong: the action was a no-op, or something
+            # is now in the way. Either is Claude's problem, not a loop's.
+            print("        the page did not respond as the step intended — "
+                  "handing back")
+            return False
 
         # A loop choosing the same move is not progressing, whatever the page
         # says. Carrying a field's current value fixed the known cause; this
@@ -197,6 +237,9 @@ def main(argv: list[str]) -> int:
     goals = list(PLAN)
     typed = "süt"
     headed = "--headed" in argv
+    if "--shots" in argv:
+        global SHOTS
+        SHOTS = Path(__file__).resolve().parent / "logs" / "shots"
     if "--url" in argv:
         url = argv[argv.index("--url") + 1]
     if "--goals" in argv:

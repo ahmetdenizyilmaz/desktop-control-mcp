@@ -338,11 +338,21 @@ def q_commit(intent: str) -> jev.Noul:
 
 
 def q_blocker(rows_hint: str = "") -> jev.Choice:
-    """What kind of thing is in the way — the single most common time sink in
-    shopping and ticketing flows, and pure recognition."""
+    """What is in the way — the commonest time sink in shopping and ticketing.
+
+    Phrased as a question about the *whole screen*, not about a missing
+    control. The first version opened with "The expected control is not
+    here", which quietly scoped it to the case where the target was absent —
+    so on migros.com.tr it answered `nothing` at 0.9 while a cookie banner
+    and a "choose a delivery method" modal were both on screen, and the
+    modal was the entire reason the run failed. A question that only fires
+    when something else has already gone wrong is not a guard.
+    """
     return jev.Choice(
-        instructions="The expected control is not here. What is on screen "
-                     "instead?",
+        instructions="Look at the whole screen. Is anything standing between "
+                     "the user and the task — an overlay, a dialog, a "
+                     "banner, a wall? Answer 'nothing' only if the page is "
+                     "clear and ready to be used.",
         criteria={"cookie_banner": "A cookie or privacy consent notice",
                   "login": "A sign-in or account wall",
                   "captcha": "A human-verification or bot check",
@@ -351,8 +361,10 @@ def q_blocker(rows_hint: str = "") -> jev.Choice:
                   "sold_out": "The item, seat or fare is no longer available",
                   "loading": "Still loading — spinner, skeleton or empty list",
                   "wrong_page": "A different page than expected",
-                  "nothing": "Nothing is blocking; the control is simply "
-                             "elsewhere or needs scrolling to"})
+                  "modal": "A dialog or overlay demanding a choice before "
+                           "anything else can be used — pick a delivery "
+                           "method, choose a store, set a location",
+                  "nothing": "Nothing is blocking; the page is clear"})
 
 
 #: What the engine can actually carry out. Deliberately small and closed —
