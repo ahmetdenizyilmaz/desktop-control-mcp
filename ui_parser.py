@@ -7,9 +7,47 @@ Models:
 """
 
 import os
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+
+
+def _device():
+    """The agent's device resolver, or a plain torch.cuda check if absent.
+
+    This file is also the original standalone project, so it has to keep
+    working with `agent/` nowhere on the path. When the agent is driving,
+    its resolver is the better one: it tells CUDA from ROCm (both answer the
+    same API), knows about DirectML, and can say what to install when it
+    finds a GPU that torch cannot reach — which is the case that cost this
+    pipeline 84s a pass.
+    """
+    try:
+        root = str(Path(__file__).resolve().parent / "agent")
+        if root not in sys.path:
+            sys.path.append(root)
+        from core import device
+        return device
+    except Exception:
+        class _Fallback:
+            @staticmethod
+            def is_accelerated() -> bool:
+                try:
+                    import torch
+                    return torch.cuda.is_available()
+                except Exception:
+                    return False
+
+            @staticmethod
+            def torch_device():
+                import torch
+                return torch.device("cuda") if torch.cuda.is_available() else None
+
+            @staticmethod
+            def describe() -> str:
+                return "device resolver unavailable; plain torch.cuda check"
+        return _Fallback()
 
 # Module-level model storage
 _models = {
@@ -50,14 +88,28 @@ def load_models() -> None:
         str(florence_path), trust_remote_code=True
     )
 
-    # Move to GPU if available
-    import torch
-    if torch.cuda.is_available():
-        _models["florence_model"] = _models["florence_model"].to("cuda")
+    # Move to GPU if there is one we can actually reach.
+    #
+    # Not `torch.cuda.is_available()` directly: that answers True for a ROCm
+    # build on a Radeon as well as for CUDA on an NVIDIA card, and False for
+    # a DirectML-capable GPU that is sitting right there. The resolver knows
+    # the difference, and says so in the log — a timing with no device named
+    # beside it is not reproducible.
+    dev = _device()
+    print(f"[ui_parser] {dev.describe()}", flush=True)
+    target = dev.torch_device()
+    if target is not None:
+        try:
+            _models["florence_model"] = _models["florence_model"].to(target)
+        except Exception as e:
+            # A GPU that accepts the call and then fails on a kernel is worse
+            # than one that never started. Fall back loudly and carry on.
+            print(f"[ui_parser] could not move Florence-2 to {target}: {e}; "
+                  f"staying on CPU", flush=True)
 
     # 3) EasyOCR reader
     import easyocr
-    _models["easyocr"] = easyocr.Reader(["en"], gpu=torch.cuda.is_available())
+    _models["easyocr"] = easyocr.Reader(["en"], gpu=dev.is_accelerated())
 
 
 def _caption_icon(cropped: Image.Image) -> str:
