@@ -103,9 +103,12 @@ def _claude(prompt: str, model: str, timeout: float, env: dict | None,
         timeout=timeout, env={**os.environ, **(env or {})},
         creationflags=0x08000000)
     out = json.loads(p.stdout or "{}")
-    from . import ledger
+    from . import ledger, tasklog
     ledger.record(kind, time.time() - t0, out.get("total_cost_usd"),
                   f"claude {model}")
+    tasklog.model(f"claude {model}", kind, prompt,
+                  str(out.get("result", "")), time.time() - t0,
+                  out.get("total_cost_usd"))
     if out.get("is_error"):
         raise RuntimeError(str(out.get("result", ""))[:200])
     return str(out.get("result", "") or "")

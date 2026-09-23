@@ -339,6 +339,18 @@ class Channel:
         from .secrets import redact
         question = redact(question)
         self.pending = {"question": question, "since": time.time()}
+        from . import tasklog
+        tasklog.event("question", text=question, approve_deny=approve_deny)
+        try:
+            reply = self._ask(question, approve_deny, timeout_s, cancelled)
+            tasklog.event("answer", answer=reply.answer.value, text=reply.text,
+                          via=reply.via, waited_s=round(reply.waited_s, 1))
+            return reply
+        finally:
+            self.pending = None
+
+    def _ask(self, question: str, approve_deny: bool, timeout_s: float,
+             cancelled) -> Reply:
         try:
             if self.app_ask is not None:
                 try:

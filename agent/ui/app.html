@@ -401,6 +401,11 @@ input::placeholder{color:var(--ink3)}
         <label for="eng-author">When no script fits, let Claude write one and keep it for next time</label></div>
       <div class="toggle"><input type="checkbox" data-key="browser_headless" id="set-headless">
         <label for="set-headless">Run the browser invisibly (falls back to visible when a site blocks it)</label></div>
+      <div class="toggle"><input type="checkbox" data-key="log_everything" id="set-logall">
+        <label for="set-logall">Log everything — every step, agent message, model prompt and reply,
+          question and answer, and every screenshot shown to a model, one folder per task</label></div>
+      <div class="crow" style="margin:-2px 0 10px 28px"><button id="open-logs">Open logs folder</button>
+        <span class="hint">Logs hold screenshots of your screen — kept on this PC only.</span></div>
 
       <div class="grid2">
         <label class="field"><span>Claude rescue tries per stuck step (0 = go straight to takeover)</span>
@@ -880,6 +885,10 @@ document.getElementById("jev-test").onclick = () =>
 document.getElementById("claude-test").onclick = () =>
   runTest("claude-test", "claude-msg", () => api().test_claude(),
           "Asking the agent's model to reply OK (~10–30 s)…");
+document.getElementById("open-logs").onclick = async () => {
+  const r = await api().open_logs();
+  if (!r.ok) flashSaved("✗ " + (r.error || "could not open"), true);
+};
 document.getElementById("or-test").onclick = () =>
   runTest("or-test", "or-msg", () => api().test_openrouter(), "Checking the key…");
 document.getElementById("gm-test").onclick = () =>

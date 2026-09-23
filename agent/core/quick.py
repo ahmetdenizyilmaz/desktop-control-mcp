@@ -54,10 +54,13 @@ def complete(prompt: str, settings: dict | None = None,
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 out = json.load(r)
             text = out["choices"][0]["message"]["content"] or ""
-            from . import ledger
+            from . import ledger, tasklog
             ledger.record(kind, time.time() - t0,
                           (out.get("usage") or {}).get("cost"),
                           f"openrouter {out.get('model', '')}")
+            tasklog.model(f"openrouter {out.get('model', '')}", kind, prompt,
+                          text, time.time() - t0,
+                          (out.get("usage") or {}).get("cost"))
             return text, f"openrouter {int((time.time() - t0) * 1000)} ms"
         except Exception:
             pass                               # fall through to the CLI

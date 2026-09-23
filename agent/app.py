@@ -133,6 +133,10 @@ DEFAULTS = {
     # a small model over the OpenRouter key (~1 s); the CLI model if none.
     "param_model": "haiku",
     "quick_model": "anthropic/claude-haiku-4.5",
+    # Write EVERYTHING a task does to logs/tasks/<time>_<task>/: every
+    # feed line, agent message, tool call and result, model prompt and
+    # reply, question and answer, and every screenshot shown to a model.
+    "log_everything": False,
     "settings_version": 2,
 }
 
@@ -155,7 +159,7 @@ SETTINGS_SCHEMA: dict[str, tuple] = {
     "rescue_tries": ("int", 0, 5), "rescue_model": ("str", 120),
     "decider": ("choice", ["jev", "claude"]), "decider_model": ("str", 120),
     "author_model": ("str", 120), "param_model": ("str", 120),
-    "quick_model": ("str", 120),
+    "quick_model": ("str", 120), "log_everything": ("bool",),
     "no_change_seconds": ("float", 3, 120),
     "busy_grace_seconds": ("float", 0, 300),
     "remind_after_minutes": ("float", 0.5, 1440),
@@ -601,6 +605,11 @@ class Agent:
 
     # -- feed ------------------------------------------------------------
     def _say(self, kind: str, text: str, **extra) -> None:
+        try:
+            from core import tasklog
+            tasklog.event("feed", feed_kind=kind, text=text)
+        except Exception:
+            pass
         self._seq += 1
         self.feed.append({"t": time.time(), "seq": self._seq, "kind": kind,
                           "text": text, **extra})
@@ -1639,6 +1648,10 @@ class Agent:
         from core import ledger as _ledger
         _ledger.current = _ledger.Ledger(task)
         self._ledger = _ledger.current
+        from core import tasklog as _tasklog
+        if _tasklog.start(task, bool(self.settings.get("log_everything"))):
+            _tasklog.event("settings", **{k: v for k, v in
+                                          self.settings.items()})
         # "cancel" from Telegram (or a chat a script names) stops the task
         # at ANY point - not only while a step happens to wait for a reply.
         try:
@@ -1725,6 +1738,17 @@ class Agent:
                     self._say("system", line)
                 _ledger.current = None
             except Exception:
+                line = ""
+            try:
+                from core import tasklog as _tasklog
+                log = _tasklog.current
+                if log is not None:
+                    _tasklog.event("ledger", **(self._ledger.view()
+                                                if self._ledger else {}))
+                    _tasklog.stop("stopped" if self._cancel.is_set()
+                                  else "finished", took + "\n" + line)
+                    self._say("system", f"Full log: {log.dir}")
+            except Exception:
                 pass
             self._come_to_front()
 
@@ -1785,6 +1809,41 @@ class Agent:
             chan.channel.notify(msg)
         except Exception:
             pass
+
+    def _log_tool_result(self, block) -> None:
+        """A tool's result, with any image in it saved as a file - these
+        are the screenshots the agent was actually shown."""
+        from core import tasklog as _tl
+        log = _tl.current
+        if log is None:
+            return
+        parts = []
+        content = getattr(block, "content", None)
+        items = content if isinstance(content, list) else [content]
+        for it in items:
+            if isinstance(it, dict) and it.get("type") == "image":
+                src = it.get("source") or {}
+                parts.append({"image": log.shot_b64(
+                    src.get("data", ""), src.get("media_type", "image/png"),
+                    "agent")})
+            elif isinstance(it, dict) and it.get("type") == "text":
+                parts.append({"text": it.get("text", "")})
+            elif it is not None:
+                parts.append({"text": str(it)})
+        _tl.event("agent", role="tool_result",
+                  id=getattr(block, "tool_use_id", ""),
+                  error=bool(getattr(block, "is_error", False)), parts=parts)
+
+    def open_logs(self) -> dict:
+        """Show the task logs folder in Explorer."""
+        import os
+        from core import tasklog
+        d = tasklog.root()
+        try:
+            os.startfile(str(d))
+        except Exception as e:
+            return {"ok": False, "error": str(e), "path": str(d)}
+        return {"ok": True, "path": str(d)}
 
     def _remote_cancel(self, reason: str) -> None:
         """A 'cancel' from outside the machine: same as pressing Stop."""
@@ -1989,6 +2048,17 @@ class Agent:
             self._usage["model"] = (getattr(msg, "model", "")
                                     or self._usage["model"])
             self._last_model = self._usage["model"] or self._last_model
+            from core import tasklog as _tl
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    _tl.event("agent", role="tool_call", name=block.name,
+                              input=block.input, id=getattr(block, "id", ""))
+                elif isinstance(block, ThinkingBlock):
+                    _tl.event("agent", role="thinking",
+                              text=getattr(block, "thinking", ""))
+                elif isinstance(block, TextBlock):
+                    _tl.event("agent", role="assistant", text=block.text,
+                              model=getattr(msg, "model", ""))
             for block in msg.content:
                 if isinstance(block, TextBlock) and block.text.strip():
                     self._say("claude", block.text.strip())
@@ -2012,6 +2082,7 @@ class Agent:
             # show a finished tool as still running.
             for block in getattr(msg, "content", None) or []:
                 if isinstance(block, ToolResultBlock):
+                    self._log_tool_result(block)
                     self._current = None
                     watchdog.beat(self._task_id, "tool result")
                     self._refresh_border()      # back to blue: thinking
@@ -2029,6 +2100,11 @@ class Agent:
                     learn_rate(self._usage.get("model", ""),
                                _weighted_tokens(self._usage), float(cost))
             body = getattr(msg, "result", "") or "Done."
+            from core import tasklog as _tl
+            _tl.event("agent", role="result", text=body,
+                      cost=getattr(msg, "total_cost_usd", None),
+                      turns=getattr(msg, "num_turns", None),
+                      error=bool(getattr(msg, "is_error", False)))
             self._last_result = {"text": body,
                                  "error": bool(getattr(msg, "is_error", False))}
             self._say("result", body)
@@ -2174,7 +2250,95 @@ def claude_cli_missing() -> str:
             "https://claude.com/claude-code and sign in, then start this again.")
 
 
+def selftest() -> int:
+    """`AGIAgent.exe --selftest`: can the packaged app actually run a task?
+
+    Checks the parts a build can silently lose - the pipeline modules and
+    their data, the script library, the screen watcher, the decision model,
+    the Claude CLI - without touching the mouse. The window-less exe has no
+    console, so the result is also written to <data>/selftest.json.
+    """
+    import traceback
+    out: dict = {"frozen": paths.FROZEN, "data": str(paths.data_root()),
+                 "checks": {}}
+
+    def check(name, fn):
+        t0 = time.time()
+        try:
+            detail = fn()
+            out["checks"][name] = {"ok": True, "detail": detail,
+                                   "ms": int((time.time() - t0) * 1000)}
+        except Exception as e:
+            out["checks"][name] = {"ok": False, "error": f"{type(e).__name__}: "
+                                   f"{e}", "trace": traceback.format_exc()[-600:]}
+
+    def lib():
+        from core import pipeline_bridge as bridge
+        lb = bridge.library(fresh=True)
+        from core.engine import listed_rows
+        names = [r["name"] for r in listed_rows(lb)]
+        for n in names:
+            lb.resolve(n)                     # every call graph complete
+        return {"scripts": len(lb.local()), "listed": len(names),
+                "errors": lb.errors, "root": str(bridge.scripts_root())}
+
+    def modules():
+        from core import pipeline_bridge as bridge
+        if not bridge.ensure_importable():
+            raise RuntimeError(f"pipeline/ not found at {bridge.pipeline_dir()}")
+        import script.runner, script.helper, script.choose  # noqa: F401
+        import vision.elements, vision.ocr, cursor          # noqa: F401
+        from core import (engine, authoring, ledger, checkpoint,  # noqa: F401
+                          tasklog, quick, progress, waiting, cancel_watch)
+        return "all import"
+
+    def pulse():
+        from core.progress import ScreenPulse
+        p = ScreenPulse(interval=0.3).start()
+        time.sleep(1.5)
+        p.stop()
+        if not p.samples:
+            raise RuntimeError("no screen samples taken")
+        return {"samples": p.samples}
+
+    def jev_check():
+        from core import keys
+        s = load_settings()
+        if not keys.has_jev_key(s):
+            return "no Jev key saved - scripts will be skipped"
+        r = keys.test_jev(s)
+        if not r.get("ok"):
+            raise RuntimeError(r.get("error") or "wrong answer")
+        return {"latency_ms": r["latency_ms"], "model": r.get("model")}
+
+    def cli():
+        problem = claude_cli_missing()
+        if problem:
+            raise RuntimeError(problem)
+        import shutil as _sh
+        return _sh.which("claude")
+
+    check("pipeline modules", modules)
+    check("script library", lib)
+    check("screen watcher", pulse)
+    check("Jev", jev_check)
+    check("Claude CLI", cli)
+    out["ok"] = all(c["ok"] for c in out["checks"].values())
+    text = json.dumps(out, indent=2, default=str)
+    try:
+        paths.data("selftest.json").write_text(text, encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        print(text)
+    except Exception:
+        pass
+    return 0 if out["ok"] else 1
+
+
 def main() -> None:
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     agent = Agent()
     agent.update_settings({})
 

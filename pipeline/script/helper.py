@@ -76,6 +76,9 @@ class OpusHelper:
         #: Told (seconds, cost_usd or None) after every call - a host keeps
         #: the task's bill with it. The CLI reports what each call cost.
         self.on_cost = None
+        #: Told (prompt, reply, seconds, cost, screenshot) after every call,
+        #: for a host that keeps a full log of what the model saw and said.
+        self.on_log = None
         self.spent_s = 0.0
         self.spent_usd = 0.0
 
@@ -139,6 +142,11 @@ class OpusHelper:
             if self.on_cost is not None:
                 try:
                     self.on_cost(time.time() - t0, cost)
+                except Exception:
+                    pass
+            if self.on_log is not None:
+                try:
+                    self.on_log(prompt, text, time.time() - t0, cost, shot)
                 except Exception:
                     pass
         except Exception as exc:

@@ -825,6 +825,74 @@ check("Claude may point at an existing script instead of writing a copy",
       and len(bridge.library(fresh=True).local()) == before_n, why3)
 authoring._claude = real_claude
 
+
+# --------------------------------------------------------------------------
+print("\nlog everything - when asked")
+# --------------------------------------------------------------------------
+from core import tasklog                                     # noqa: E402
+
+check("logging off: nothing is started, nothing written",
+      tasklog.start("x", enabled=False) is None and tasklog.current is None)
+lg = tasklog.start("haftalık migros alışverişimi yap", enabled=True)
+check("logging on: one folder per task, named for it",
+      lg is not None and lg.dir.exists()
+      and "haftalik-migros-alisverisimi-yap" in lg.dir.name, str(lg.dir))
+ag._say("system", "Jev chose migros/weekly-shop")
+tasklog.model("jev", "decide: which script", "prompt text", "reply text",
+              0.4, 0.00002)
+from core.secrets import vault as _v                           # noqa: E402
+_v.put("log-test-secret", "hunter2-SECRET", note="t")
+tasklog.model("claude opus", "rescue", "type hunter2-SECRET please", "ok",
+              12.0, 0.2, shot=str(bridge.scripts_root().parent / "nope.png"))
+import base64 as _b64                                         # noqa: E402
+png = _b64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
+
+
+class _TRB:
+    tool_use_id = "tu1"
+    is_error = False
+    content = [{"type": "text", "text": "Screenshot saved"},
+               {"type": "image", "source": {"type": "base64",
+                                            "media_type": "image/png",
+                                            "data": png}}]
+
+
+ag._log_tool_result(_TRB())
+from core import channel as _ch                               # noqa: E402
+_real_ask = _ch.channel._ask
+_ch.channel._ask = lambda q, ad, t, c: _ch.Reply(_ch.Answer.APPROVE,
+                                                 via="app")
+_ch.channel.ask("Allow the script to click 'Sepeti Onayla'?")
+_ch.channel._ask = _real_ask
+tasklog.stop("finished", "Time: script 3s\nCost: $0.0004")
+events = [json.loads(l) for l in (lg.dir / "events.jsonl").read_text(
+    encoding="utf-8").splitlines()]
+kinds = [e["kind"] for e in events]
+check("feed lines, model calls, tool results, questions and answers "
+      "are all in the log",
+      {"start", "feed", "model", "agent", "question", "answer", "end"}
+      <= set(kinds), str(kinds))
+check("a model call keeps its prompt, reply, time and cost",
+      any(e["kind"] == "model" and e["who"] == "jev" and
+          e["prompt"] == "prompt text" and e["cost"] == 0.00002
+          for e in events))
+shots = list((lg.dir / "shots").glob("*.png"))
+check("a screenshot the agent was shown is saved as a file and referenced",
+      shots and any(e.get("role") == "tool_result" and
+                    any("image" in p for p in e.get("parts", []))
+                    for e in events), str(shots))
+check("a vault secret never reaches the log file",
+      "hunter2-SECRET" not in (lg.dir / "events.jsonl").read_text(
+          encoding="utf-8"))
+check("the question and its answer are both recorded",
+      any(e["kind"] == "question" and "Sepeti Onayla" in e["text"]
+          for e in events)
+      and any(e["kind"] == "answer" and e["answer"] == "approve"
+              for e in events))
+check("a summary is written at the end",
+      "Cost: $0.0004" in (lg.dir / "summary.txt").read_text(encoding="utf-8"))
+_v.delete("log-test-secret")
+
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)
 total = len(results)

@@ -214,6 +214,19 @@ class ScriptEngine:
         ledger.record("decide", ms / 1000,
                       d.cost_usd if d is not None and d.real else None,
                       "jev: which script")
+        from . import tasklog
+        ans = getattr(verdict, "answer", None)
+        tasklog.model("jev", "decide: which script",
+                      json.dumps({"task": task, "scripts": [
+                          f"{i}: {c['name']} — {c['description'][:120]}"
+                          for i, c in enumerate(cands)]}, ensure_ascii=False),
+                      json.dumps({"chose": (cands[idx]["name"]
+                                            if idx is not None else None),
+                                  "why": verdict.why,
+                                  "ranked": list(getattr(ans, "ranked", None)
+                                                 or [])[:5]}),
+                      ms / 1000, d.cost_usd if d is not None and d.real
+                      else None)
         if idx is None:
             second = self._second_opinion(task, cands, verdict)
             if second:
@@ -468,10 +481,18 @@ class ScriptEngine:
                 t0 = time.time()
                 try:
                     got = jev(goal, reject, options)
-                    from . import ledger
+                    from . import ledger, tasklog
                     ledger.record("decide", time.time() - t0,
                                   client.stats.cost_usd - before,
                                   "jev: which item")
+                    tasklog.model(
+                        "jev", "decide: which item",
+                        json.dumps({"goal": goal, "reject": reject,
+                                    "options": options}, ensure_ascii=False),
+                        json.dumps({"choice": got[0],
+                                    "label": options.get(got[0], ""),
+                                    "margin": got[1]}, ensure_ascii=False),
+                        time.time() - t0, client.stats.cost_usd - before)
                     return got
                 except NoChoice as e:
                     why = str(e)
@@ -613,6 +634,10 @@ class ScriptEngine:
                 from . import ledger as _ledger
                 helper.on_cost = lambda s, c: _ledger.record(
                     "rescue", s, c, "claude: stuck step")
+                from . import tasklog as _tasklog
+                helper.on_log = lambda prompt, reply, s, c, shot: \
+                    _tasklog.model(f"claude {helper.model}", "rescue",
+                                   prompt, reply, s, c, shot=shot)
             runner = Runner(
                 resolved, Watcher(hwnd=None), GuardedActuator(self.say),
                 confirm=self._confirm,
