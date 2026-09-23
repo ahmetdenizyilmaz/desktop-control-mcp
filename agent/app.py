@@ -1606,6 +1606,15 @@ class Agent:
         # No turn cap. A long task is not a runaway task — the watchdog is
         # what catches genuinely stuck work, and the user can stop it at any
         # moment. Cutting off at an arbitrary count just loses the work.
+        # The SDK ships its own Claude Code CLI, pinned to whatever version
+        # the SDK was released with - and a new model needs a new CLI:
+        # "Claude Code 2.1.233 does not support this model; version 2.1.280
+        # or newer is required". The one on PATH is the one the person
+        # keeps updated, so prefer it; the bundled one is the fallback.
+        import shutil as _shutil
+        system_cli = _shutil.which("claude")
+        if system_cli:
+            opts.cli_path = system_cli
         limit = int(self.settings.get("max_turns") or 0)
         if limit > 0:
             opts.max_turns = limit

@@ -183,6 +183,8 @@ class ScriptEngine:
                                f"be read and were skipped — see Scripts.")
         if not rows:
             return None, "no saved scripts"
+        if self._decider() == "claude":
+            return self._claude_recognise(task, rows)
         client = self.jev()
         if client.offline:
             return None, ("Jev has no key (Settings → Engines) — going "
@@ -221,8 +223,9 @@ class ScriptEngine:
         needed = {k: v for k, v in script.params.items()}
         if not needed:
             return {}
-        if all(v != "" for v in needed.values()):
-            return {}                       # every one has a default
+        # Asked even when every parameter has a default: a script Claude
+        # wrote for "type 'merhaba dünya'" keeps that text as the default,
+        # and "type 'test iki'" must not quietly type the old one.
         exe = shutil.which("claude")
         if not exe:
             return None
@@ -398,12 +401,20 @@ class ScriptEngine:
         answer (no key, a failed call, an answer with no options)."""
         from script.choose import NoChoice, jev_chooser
         jev = jev_chooser(client=self.jev())
+        use_claude = self._decider() == "claude"
 
         def choose(goal, reject, options):
-            try:
-                return jev(goal, reject, options)
-            except NoChoice as e:
-                why = str(e)
+            if use_claude:
+                k = self._claude_choose(goal, reject, options,
+                                        model=self._decider_model())
+                if k:
+                    return k, 1.0
+                why = "Claude could not choose"
+            else:
+                try:
+                    return jev(goal, reject, options)
+                except NoChoice as e:
+                    why = str(e)
             key = self._claude_choose(goal, reject, options)
             if key:
                 self.say("system", f"Jev could not choose ({why}); Claude "
@@ -416,7 +427,41 @@ class ScriptEngine:
 
         return choose
 
-    def _claude_choose(self, goal, reject, options) -> str:
+    def _decider(self) -> str:
+        """Who makes the quick decisions - which saved script, which
+        product. "jev" (default: ~0.4 s, a fraction of a cent) or "claude"
+        (a Claude model: seconds per decision, far dearer, no Jev key)."""
+        return (self.settings.get("decider") or "jev").lower()
+
+    def _decider_model(self) -> str:
+        return self.settings.get("decider_model") or "claude-opus-5-5"
+
+    def _claude_recognise(self, task: str, rows: list[dict]
+                          ) -> tuple[str | None, str]:
+        from .authoring import _claude, _first_object
+        opts = "\n".join(f"{i}: {r['name']} — {r['description'][:140]}"
+                         for i, r in enumerate(rows))
+        t0 = time.time()
+        try:
+            text = _claude(
+                "Which saved automation script does this task ask for? Only a "
+                "script that does THIS task counts; a similar-looking one does "
+                "not.\nTASK: " + task + "\nSCRIPTS:\n" + opts
+                + '\nReply with only {"choice": <number>} or '
+                  '{"choice": "none"}.',
+                self._decider_model(), 120, self.provider_env)
+        except Exception as e:
+            return None, f"Claude could not decide ({e})"
+        ms = int((time.time() - t0) * 1000)
+        ch = _first_object(text).get("choice")
+        try:
+            i = int(ch)
+            name = rows[i]["name"]
+        except (TypeError, ValueError, IndexError):
+            return None, f"Claude: no saved script fits ({ms} ms)"
+        return name, f"Claude chose {name} ({self._decider_model()}, {ms} ms)"
+
+    def _claude_choose(self, goal, reject, options, model: str = "") -> str:
         try:
             from .authoring import _claude, _first_object
             text = _claude(
@@ -425,7 +470,7 @@ class ScriptEngine:
                 + "\nOptions:\n" + "\n".join(f"{k}: {v}" for k, v in
                                              options.items())
                 + '\nReply with only {"choice": "<key>"}.',
-                self.settings.get("param_model") or "haiku", 90,
+                model or self.settings.get("param_model") or "haiku", 120,
                 self.provider_env)
             k = str(_first_object(text).get("choice", ""))
             return k if k in options else ""

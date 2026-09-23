@@ -323,12 +323,24 @@ class Runner:
                 return
             raise StepFailed(str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - a bug here is a failed step
+            # An unexpected error is still a stuck step, and worth the same
+            # rescue: a Store app that updated itself moved its exe, and the
+            # launch raised FileNotFoundError - which used to skip the
+            # rescue and go straight to a full takeover.
+            text = f"{type(exc).__name__}: {exc}"
+            if self._can_rescue(step):
+                fixed = self._rescue(step, values, where, depth, text)
+                if fixed:
+                    ms = (time.time() - t0) * 1000
+                    self._tally(step)
+                    self._record(Outcome(where, step.do, fixed, True, ms))
+                    return
             ms = (time.time() - t0) * 1000
-            self._record(Outcome(where, step.do,
-                                 f"{type(exc).__name__}: {exc}", False, ms))
+            self._record(Outcome(where, step.do, text, False, ms,
+                                 skipped=step.optional))
             if step.optional:
                 return
-            raise StepFailed(str(exc)) from exc
+            raise StepFailed(text) from exc
 
         ms = (time.time() - t0) * 1000
         self._tally(step)
@@ -353,7 +365,7 @@ class Runner:
     #: Steps worth a stronger model's time when stuck. Not control flow:
     #: a failed `repeat` or `call` already reported the step inside it.
     RESCUABLE = ("click", "double_click", "right_click", "type", "key",
-                 "wait_for", "expect", "scroll", "move", "focus")
+                 "wait_for", "expect", "scroll", "move", "focus", "open")
 
     def _can_rescue(self, step: Step) -> bool:
         return (self.helper is not None and not self._rescuing
@@ -1346,6 +1358,7 @@ class DesktopActuator:
         its Start-menu AppUserModelID.
         """
         import subprocess
+        from pathlib import Path
 
         from core import noconsole
         from core.machine_profile import load_profile
@@ -1368,6 +1381,18 @@ class DesktopActuator:
                 time.sleep(2.0)
                 subprocess.Popen(["explorer.exe", url], creationflags=flags)
             return f"launched {app}" + (f" and opened {url}" if url else "")
+        if (target and not target.startswith("shell:")
+                and not Path(target).exists()):
+            # Store apps live under a VERSIONED folder (WindowsApps/
+            # Microsoft.WindowsNotepad_11.2606...) that moves on every
+            # update, so a remembered path goes stale. The app's command
+            # alias (notepad.exe, mspaint.exe) does not.
+            import shutil as _sh
+            alias = _sh.which(Path(target).name) or _sh.which(app)
+            if not alias:
+                raise StepFailed(f"{app!r} moved (was {target}) and no "
+                                 f"command alias finds it")
+            target = alias
         if target:
             cmd = [target] + ([url] if url else [])
             subprocess.Popen(cmd, creationflags=flags)

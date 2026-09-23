@@ -1,0 +1,53 @@
+{
+  "name": "notepad/write-text",
+  "version": 2,
+  "description": "Open Notepad and type some text into it.",
+  "params": {
+    "text": "merhaba dünya"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "notepad",
+    "not defteri",
+    "write",
+    "type",
+    "yaz",
+    "metin",
+    "text",
+    "note",
+    "not"
+  ],
+  "authored_by": "claude",
+  "source_task": "notepad'ı aç ve \"merhaba dünya\" yaz",
+  "verified": true,
+  "patched_by": "claude",
+  "patched_at": "2026-09-23 12:11",
+  "steps": [
+    {
+      "do": "open",
+      "app": "notepad",
+      "window": "Notepad",
+      "timeout": 30.0
+    },
+    {
+      "do": "focus",
+      "window": "Notepad",
+      "timeout": 15.0
+    },
+    {
+      "do": "click",
+      "target": "Text editor",
+      "note": "Win11 Notepad editor is a Document control named 'Text editor', not an edit box"
+    },
+    {
+      "do": "key",
+      "keys": "ctrl+a"
+    },
+    {
+      "do": "type",
+      "value": "{text}",
+      "expect": "{text}"
+    }
+  ]
+}

@@ -90,7 +90,8 @@ class WaitPolicy:
         if w >= self.pause_after_s:
             self.paused_by_us = True
             self.set_paused(True)
-            msg = (f"Paused after {w / 60:.0f} min waiting for "
+            took = f"{w / 60:.0f} min" if w >= 90 else f"{w:.0f} s"
+            msg = (f"Paused after {took} waiting for "
                    f"{self.reason}. Press Resume to keep waiting.")
             self.say("system", msg)
             try:

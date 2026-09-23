@@ -320,6 +320,20 @@ def _uia_elements(hwnd: int, max_nodes: int = 1500,
                     content[:] = [(r[0], r[1], r[2], r[3], area)]
             except Exception:
                 pass
+        if type_name == "DocumentControl":
+            # A NATIVE document you can type into is a text field: Windows
+            # 11 Notepad's whole editor is a DocumentControl named "Text
+            # editor", and leaving it out made "click 'Text editor'" fail
+            # even though the control was right there. A browser's page is
+            # a document too - named after the page title - and must stay
+            # out, or a text selector like "süt" would match the page itself
+            # and every wait for it would pass before anything loaded.
+            try:
+                if (c.FrameworkId not in ("Chrome", "Gecko", "")
+                        and c.IsKeyboardFocusable):
+                    kind = "edit"
+            except Exception:
+                pass
         if not kind:
             continue
         try:

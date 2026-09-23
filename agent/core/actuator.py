@@ -644,6 +644,7 @@ def type_text(text: str, el: Element | None = None) -> ActResult:
         except Exception:
             pass
 
+    paced = _needs_pacing()          # a fragile editor: paste instead
     ok = True
     for piece in pieces:
         if piece in ("\n", "\t"):
@@ -651,10 +652,58 @@ def type_text(text: str, el: Element | None = None) -> ActResult:
             ok &= _send([_key(vk), _key(vk, up=True)])
             time.sleep(0.012)
             continue
+        if paced:
+            ok &= _paste(piece)
+            continue
         for i in range(0, len(piece), 24):
             ok &= _send(sum((_unicode_char(c) for c in piece[i:i + 24]), []))
             time.sleep(0.004)
-    return ActResult(ok, "sendinput:unicode", (time.time() - t0) * 1000)
+    return ActResult(ok, ("clipboard:paste" if paced else "sendinput:unicode"),
+                     (time.time() - t0) * 1000)
+
+
+#: Editors that garble injected typing. Windows 11 Notepad's editor runs
+#: autocorrect at every word boundary and races the input - measured,
+#: typing "ikinci test başarılı çğüşöı":
+#:     24-char batches       'ikinci ı'
+#:     1 char / 8 ms         'ikinci eest aaaarılı ııııı'
+#:     1 char / 25 ms        right once, then 'ikinci ssst şşarılı ...'
+#: No typing speed is reliable there; pasting is. Chrome's omnibox and web
+#: fields take the fast path fine, so this applies only where the focused
+#: control is one of these.
+PACED_CLASSES = {"RichEditD2DPT"}
+
+
+def _paste(text: str) -> bool:
+    """Put `text` in through the clipboard, then give the person theirs
+    back. An image on their clipboard cannot be restored as text, so then
+    it is left alone and the text is typed slowly instead."""
+    from . import clipboard
+    try:
+        if clipboard.has_image():
+            ok = True
+            for c in text:
+                ok &= _send(_unicode_char(c))
+                time.sleep(0.03)
+            return ok
+        before = clipboard.get_text()
+        if not clipboard.set_text(text):
+            return False
+        ok = bool(send_keys("ctrl+v").ok)
+        time.sleep(0.15)                 # let the paste land before restoring
+        clipboard.set_text(before) if before else None
+        return ok
+    except Exception:
+        return False
+
+
+def _needs_pacing() -> bool:
+    try:
+        import uiautomation as auto
+        f = auto.GetFocusedControl()
+        return bool(f is not None and f.ClassName in PACED_CLASSES)
+    except Exception:
+        return False
 
 
 def char_key(ch: str) -> tuple[int, list[int]] | None:
