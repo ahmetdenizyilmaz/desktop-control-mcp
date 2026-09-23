@@ -1,0 +1,144 @@
+{
+  "foreground": [
+    {
+      "method": "1_mouse_event",
+      "button": "Seven",
+      "expect": "7",
+      "api_ok": true,
+      "registered": true,
+      "display_before": "Display is 0",
+      "display_after": "Display is 7",
+      "latency_ms": 381.4,
+      "cursor_moved": true,
+      "error": null
+    },
+    {
+      "method": "1_mouse_event",
+      "button": "Five",
+      "expect": "5",
+      "api_ok": true,
+      "registered": true,
+      "display_before": "Display is 0",
+      "display_after": "Display is 5",
+      "latency_ms": 120.4,
+      "cursor_moved": true,
+      "error": null
+    },
+    {
+      "method": "2_sendinput",
+      "button": "Seven",
+      "expect": "7",
+      "api_ok": true,
+      "registered": true,
+      "display_before": "Display is 0",
+      "display_after": "Display is 7",
+      "latency_ms": 2.7,
+      "cursor_moved": true,
+      "error": null
+    },
+    {
+      "method": "2_sendinput",
+      "button": "Five",
+      "expect": "5",
+      "api_ok": true,
+      "registered": true,
+      "display_before": "Display is 0",
+      "display_after": "Display is 5",
+      "latency_ms": 4.6,
+      "cursor_moved": true,
+      "error": null
+    },
+    {
+      "method": "3_postmessage",
+      "button": "Seven",
+      "expect": "7",
+      "api_ok": true,
+      "registered": false,
+      "display_before": "Display is 0",
+      "display_after": "Display is 0",
+      "latency_ms": 0.0,
+      "cursor_moved": false,
+      "error": null
+    },
+    {
+      "method": "3_postmessage",
+      "button": "Five",
+      "expect": "5",
+      "api_ok": true,
+      "registered": false,
+      "display_before": "Display is 0",
+      "display_after": "Display is 0",
+      "latency_ms": 0.0,
+      "cursor_moved": false,
+      "error": null
+    },
+    {
+      "method": "4_uia_invoke",
+      "button": "Seven",
+      "expect": "7",
+      "api_ok": true,
+      "registered": true,
+      "display_before": "Display is 0",
+      "display_after": "Display is 7",
+      "latency_ms": 504.1,
+      "cursor_moved": false,
+      "error": null
+    },
+    {
+      "method": "4_uia_invoke",
+      "button": "Five",
+      "expect": "5",
+      "api_ok": true,
+      "registered": true,
+      "display_before": "Display is 0",
+      "display_after": "Display is 5",
+      "latency_ms": 504.9,
+      "cursor_moved": false,
+      "error": null
+    },
+    {
+      "method": "5_uia_legacy",
+      "button": "Seven",
+      "expect": "7",
+      "api_ok": true,
+      "registered": true,
+      "display_before": "Display is 0",
+      "display_after": "Display is 7",
+      "latency_ms": 503.9,
+      "cursor_moved": false,
+      "error": null
+    },
+    {
+      "method": "5_uia_legacy",
+      "button": "Five",
+      "expect": "5",
+      "api_ok": true,
+      "registered": true,
+      "display_before": "Display is 0",
+      "display_after": "Display is 5",
+      "latency_ms": 501.3,
+      "cursor_moved": false,
+      "error": null
+    }
+  ],
+  "background": [
+    {
+      "method": "5_uia_legacy",
+      "registered_while_minimized": false,
+      "latency_ms": 105.8,
+      "display_after": "Display is 0"
+    },
+    {
+      "method": "4_uia_invoke",
+      "registered_while_minimized": false,
+      "latency_ms": 114.9,
+      "display_after": "Display is 0"
+    },
+    {
+      "method": "3_postmessage",
+      "registered_while_minimized": false,
+      "latency_ms": 0.0,
+      "display_after": "Display is 0"
+    }
+  ]
+}

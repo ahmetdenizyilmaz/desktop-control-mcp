@@ -1,0 +1,15 @@
+{
+  "name": "migros/open",
+  "version": 1,
+  "description": "Get Chrome onto the Migros site with the banners cleared. Does NOT search - every search navigates to its own URL from wherever it starts.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {"do": "open", "app": "chrome", "window": "Chrome", "timeout": 60,
+     "note": "Reuses the browser you already have; a url on this step would open a NEW TAB every run."},
+    {"do": "call", "script": "browser/goto",
+     "with": {"url": "https://www.migros.com.tr", "title": "Migros"},
+     "note": "Just to be on the site, so cookies and any consent banner are settled. This page is the corporate hub and has NO search box - that is fine, nothing here needs one."},
+    {"do": "call", "script": "browser/dismiss", "with": {}}
+  ]
+}

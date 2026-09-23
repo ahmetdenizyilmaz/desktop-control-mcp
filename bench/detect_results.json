@@ -1,0 +1,82 @@
+[
+  {
+    "method": "A_vision",
+    "latency_s": 84.237,
+    "n_elements": 184,
+    "found": 23,
+    "total": 32,
+    "recall": 0.719,
+    "hit_rate": 0.438,
+    "mean_err_px": 40.5,
+    "by_category": {
+      "kind:drawn": 0.0,
+      "kind:glyph": 0.0,
+      "kind:text": 0.88,
+      "size:tiny": 0.0,
+      "style:dark": 0.5,
+      "style:flat": 0.44,
+      "style:raised": 0.27,
+      "style:tinted": 1.0
+    }
+  },
+  {
+    "method": "B_uia",
+    "latency_s": 0.517,
+    "n_elements": 41,
+    "found": 32,
+    "total": 32,
+    "recall": 1.0,
+    "hit_rate": 1.0,
+    "mean_err_px": 0.0,
+    "by_category": {
+      "kind:drawn": 1.0,
+      "kind:glyph": 1.0,
+      "kind:text": 1.0,
+      "size:tiny": 1.0,
+      "style:dark": 1.0,
+      "style:flat": 1.0,
+      "style:raised": 1.0,
+      "style:tinted": 1.0
+    }
+  },
+  {
+    "method": "C_win32",
+    "latency_s": 0.002,
+    "n_elements": 35,
+    "found": 32,
+    "total": 32,
+    "recall": 1.0,
+    "hit_rate": 1.0,
+    "mean_err_px": 0.0,
+    "by_category": {
+      "kind:drawn": 1.0,
+      "kind:glyph": 1.0,
+      "kind:text": 1.0,
+      "size:tiny": 1.0,
+      "style:dark": 1.0,
+      "style:flat": 1.0,
+      "style:raised": 1.0,
+      "style:tinted": 1.0
+    }
+  },
+  {
+    "method": "D_ocr",
+    "latency_s": 13.828,
+    "n_elements": 172,
+    "found": 23,
+    "total": 32,
+    "recall": 0.719,
+    "hit_rate": 0.438,
+    "mean_err_px": 39.9,
+    "by_category": {
+      "kind:drawn": 0.0,
+      "kind:glyph": 0.0,
+      "kind:text": 0.88,
+      "size:tiny": 0.0,
+      "style:dark": 0.5,
+      "style:flat": 0.44,
+      "style:raised": 0.27,
+      "style:tinted": 1.0
+    }
+  }
+]

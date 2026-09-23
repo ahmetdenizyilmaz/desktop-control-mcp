@@ -1,0 +1,63 @@
+{
+  "name": "media/spotify-search-play",
+  "version": 1,
+  "description": "Search Spotify for something and play the top result.",
+  "params": {
+    "query": ""
+  },
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "open",
+      "app": "spotify",
+      "window": "Spotify",
+      "timeout": 45,
+      "note": "Cold or paused, Spotify's title is 'Spotify Premium'."
+    },
+    {
+      "do": "wait_for",
+      "target": {
+        "text": "What do you want to play?",
+        "kind": "combobox"
+      },
+      "timeout": 30
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "What do you want to play?",
+        "kind": "combobox"
+      }
+    },
+    {
+      "do": "key",
+      "keys": "ctrl+a"
+    },
+    {
+      "do": "type",
+      "value": "{query}",
+      "then": "enter",
+      "note": "Enter runs the full search and closes the suggestion dropdown."
+    },
+    {
+      "do": "wait",
+      "seconds": 2.5
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Play",
+        "match": "exact",
+        "kind": "button",
+        "nth": 1
+      },
+      "expect": {
+        "text": "Pause",
+        "match": "exact",
+        "kind": "button"
+      },
+      "timeout": 10,
+      "note": "MEASURED: the Top result card's big green button is named exactly 'Play' and sits above the player bar's own 'Play', so nth 1 in reading order is the top result. Song rows are 'Play <title>', which exact excludes."
+    }
+  ]
+}

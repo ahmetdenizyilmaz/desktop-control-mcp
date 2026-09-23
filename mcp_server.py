@@ -13,11 +13,19 @@ import controller
 # ------------------------------------------------------------------
 
 _models_ready = threading.Event()
+_model_load_error: str | None = None
 
 def _load_models_background():
     """Load OmniParser v2 models in a background thread."""
+    global _model_load_error
     import ui_parser
-    ui_parser.load_models()
+    try:
+        ui_parser.load_models()
+    except Exception as e:
+        # Record the failure — otherwise the exception dies here and
+        # detect_ui_elements reports "still loading" forever.
+        _model_load_error = f"{type(e).__name__}: {e}"
+        return
     _models_ready.set()
 
 @asynccontextmanager
@@ -163,6 +171,8 @@ def detect_ui_elements(confidence_threshold: float = 0.5, full_response: bool = 
     """
     if not _models_ready.is_set():
         _models_ready.wait(timeout=60)
+        if _model_load_error:
+            return f"Error: AI model loading FAILED — {_model_load_error}"
         if not _models_ready.is_set():
             return "Error: AI models still loading. Try again in a moment."
 

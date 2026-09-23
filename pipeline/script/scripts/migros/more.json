@@ -1,0 +1,25 @@
+{
+  "name": "migros/more",
+  "version": 1,
+  "description": "One more of the product just added: press the '+' of the stepper that replaced its add button.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "click",
+      "target": {
+        "text": "Sepetteki ürün sayısını arttır",
+        "match": "exact",
+        "kind": "button",
+        "area": "content",
+        "nearest": "last"
+      },
+      "note": "MEASURED: after adding, the card's add button at (1134,1139) became a stepper whose '+' is at (1139,1141) - the same spot. Every basket item on the page has an identical '+', so nearest-to-the-last-click is what makes it THIS product."
+    },
+    {
+      "do": "wait",
+      "seconds": 0.7,
+      "note": "The count updates over the network; clicking faster than that is dropped."
+    }
+  ]
+}

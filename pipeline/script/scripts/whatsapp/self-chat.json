@@ -1,0 +1,55 @@
+{
+  "name": "whatsapp/self-chat",
+  "version": 1,
+  "description": "From WhatsApp Web's chat list, open 'Message yourself'.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "wait_for",
+      "target": {
+        "text": "New chat",
+        "match": "exact",
+        "kind": "button"
+      },
+      "timeout": 60,
+      "note": "The chat list syncs for a few seconds after load."
+    },
+    {
+      "do": "wait",
+      "seconds": 1.0
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "New chat",
+        "match": "exact",
+        "kind": "button"
+      },
+      "expect": {
+        "text": "Message yourself",
+        "kind": "button"
+      },
+      "timeout": 10
+    },
+    {
+      "do": "wait",
+      "seconds": 1.2,
+      "note": "The panel SLIDES in. Clicking the row while it moves is the 'you clicked so fast' failure."
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Message yourself",
+        "kind": "button",
+        "area": "content"
+      },
+      "expect": {
+        "text": "Type a message",
+        "kind": "edit"
+      },
+      "timeout": 10,
+      "note": "MEASURED: the row is '@adenizy (You) Message yourself' and needs a REAL click with Chrome in front - its UIA Invoke reports success and does nothing. The actuator now takes the window back before falling to Invoke."
+    }
+  ]
+}

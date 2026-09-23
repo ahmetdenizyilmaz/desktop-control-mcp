@@ -157,7 +157,7 @@ def _gate(d: jev.Decision, key: str, at: float,
 def rows_to_state(rows: Sequence[Mapping[str, Any]], *,
                   window: str = "", extra: Mapping[str, Any] | None = None,
                   history: Sequence[str] | None = None,
-                  cap: int = MAX_ROWS) -> dict:
+                  cap: int | None = None) -> dict:
     """Turn a control table into the JSON Jev reads.
 
     Keys are short on purpose — every character is an input token, and at 5Hz
@@ -168,6 +168,7 @@ def rows_to_state(rows: Sequence[Mapping[str, Any]], *,
     caller maps it back to a real `locator.Element`. The model never sees a
     coordinate and never returns one — the project's first rule.
     """
+    cap = MAX_ROWS if cap is None else cap
     out = []
     for i, r in enumerate(rows[:cap]):
         row: dict[str, Any] = {"i": i, "t": r.get("type") or r.get("control") or "",
@@ -221,7 +222,7 @@ def elements_to_rows(elements: Iterable[Any]) -> list[dict]:
     return rows
 
 
-def window_candidates(hwnd: int, cap: int = MAX_ROWS
+def window_candidates(hwnd: int, cap: int | None = None
                       ) -> tuple[list[dict], list[Any]]:
     """Everything nameable in a window, as rows and Elements in lock step.
 
@@ -235,6 +236,7 @@ def window_candidates(hwnd: int, cap: int = MAX_ROWS
     machine with no UI Automation.
     """
     from . import locator
+    cap = MAX_ROWS if cap is None else cap
 
     try:
         root = locator.uia_root(hwnd)
@@ -300,7 +302,7 @@ def fingerprint(rows: Sequence[Mapping[str, Any]]) -> str:
 # --------------------------------------------------------------------------
 
 def q_pick(intent: str, rows: Sequence[Mapping[str, Any]],
-           cap: int = MAX_ROWS) -> jev.Choice:
+           cap: int | None = None) -> jev.Choice:
     """"Which control satisfies this intent?" — the workhorse.
 
     Options are the row indices. Descriptions are `type: name` because the
@@ -308,6 +310,7 @@ def q_pick(intent: str, rows: Sequence[Mapping[str, Any]],
     the tab "Save", and name alone is exactly the ambiguity that
     `_resolve_among` currently resolves by counting.
     """
+    cap = MAX_ROWS if cap is None else cap
     criteria: dict[str, str | None] = {}
     for i, r in enumerate(rows[:cap]):
         name = (r.get("name") or "").strip()

@@ -1,0 +1,90 @@
+[
+  {
+    "method": "1_mouse_event",
+    "button": "b01",
+    "size": "160x42",
+    "api_ok": true,
+    "registered": true,
+    "landed_on": "b01",
+    "latency_ms": 746.9,
+    "cursor_moved": true,
+    "error": null
+  },
+  {
+    "method": "1_mouse_event",
+    "button": "b17",
+    "size": "26x26",
+    "api_ok": true,
+    "registered": true,
+    "landed_on": "b17",
+    "latency_ms": 122.9,
+    "cursor_moved": true,
+    "error": null
+  },
+  {
+    "method": "2_sendinput",
+    "button": "b01",
+    "size": "160x42",
+    "api_ok": true,
+    "registered": true,
+    "landed_on": "b01",
+    "latency_ms": 9.5,
+    "cursor_moved": true,
+    "error": null
+  },
+  {
+    "method": "2_sendinput",
+    "button": "b17",
+    "size": "26x26",
+    "api_ok": true,
+    "registered": true,
+    "landed_on": "b17",
+    "latency_ms": 8.0,
+    "cursor_moved": true,
+    "error": null
+  },
+  {
+    "method": "3_postmessage",
+    "button": "b01",
+    "size": "160x42",
+    "api_ok": true,
+    "registered": false,
+    "landed_on": null,
+    "latency_ms": 0.0,
+    "cursor_moved": false,
+    "error": null
+  },
+  {
+    "method": "3_postmessage",
+    "button": "b17",
+    "size": "26x26",
+    "api_ok": true,
+    "registered": false,
+    "landed_on": null,
+    "latency_ms": 0.0,
+    "cursor_moved": false,
+    "error": null
+  },
+  {
+    "method": "4_uia_invoke",
+    "button": "b01",
+    "size": "160x42",
+    "api_ok": true,
+    "registered": false,
+    "landed_on": null,
+    "latency_ms": 727.0,
+    "cursor_moved": false,
+    "error": null
+  },
+  {
+    "method": "4_uia_invoke",
+    "button": "b17",
+    "size": "26x26",
+    "api_ok": true,
+    "registered": false,
+    "landed_on": null,
+    "latency_ms": 529.3,
+    "cursor_moved": false,
+    "error": null
+  }
+]

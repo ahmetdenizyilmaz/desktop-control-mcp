@@ -74,3 +74,21 @@ litellm-venv/
 
 # Jev decision journals.
 agent/logs/
+
+# More per-machine agent state: Telegram/mail pairing, learned cost rates,
+# engine run checkpoints and per-script run stats.
+agent/channel.json
+agent/token_rates.json
+agent/runs/
+agent/script_stats.json
+
+# ---------------------------------------------------------------------------
+# pipeline/ — source and scripts are tracked; run output is not.
+# ---------------------------------------------------------------------------
+# Screen recordings (tens of MB each, and they show the desktop).
+pipeline/recordings/
+# Screenshots handed to Opus when a step was stuck.
+pipeline/.stuck/
+# Fetched remote scripts, deleted scripts.
+pipeline/script/.cache/
+pipeline/script/scripts/.trash/

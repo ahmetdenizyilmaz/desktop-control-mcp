@@ -1,0 +1,19 @@
+{
+  "name": "whatsapp/open-self",
+  "version": 1,
+  "description": "Open WhatsApp Web on the 'Message yourself' chat, ready to type.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {"do": "open", "app": "chrome", "window": "Chrome", "timeout": 60},
+    {"do": "call", "script": "browser/goto",
+     "with": {"url": "https://web.whatsapp.com", "title": "WhatsApp"}},
+    {"do": "wait_for", "target": {"text": "New chat", "match": "exact", "kind": "button"}, "timeout": 45,
+     "note": "The chat list takes a few seconds to sync after load."},
+    {"do": "click", "target": {"text": "New chat", "match": "exact", "kind": "button"},
+     "expect": {"text": "Message yourself", "kind": "button"}, "timeout": 10},
+    {"do": "click", "target": {"text": "Message yourself", "kind": "button", "area": "content"},
+     "expect": {"text": "Type a message", "kind": "edit"}, "timeout": 10,
+     "note": "Chat rows are drawn without accessible names in the main list, but the New chat panel names this one '@<you> (You) Message yourself'. It needs a REAL click: its UIA Invoke reports success and does nothing, which the expect would catch."}
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "name": "migros/big-shop",
+  "version": 1,
+  "description": "Twenty products, each attempted independently, for measuring where the time actually goes.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "call",
+      "script": "migros/open",
+      "with": {}
+    },
+    {
+      "do": "repeat",
+      "for_each": [
+        "süt",
+        "peynir",
+        "yumurta",
+        "ekmek",
+        "makarna",
+        "pirinç",
+        "domates",
+        "elma",
+        "çay",
+        "kağıt havlu",
+        "zeytin",
+        "bal",
+        "reçel",
+        "salça",
+        "ayçiçek yağı",
+        "şeker",
+        "un",
+        "tuz",
+        "deterjan",
+        "şampuan"
+      ],
+      "as": "product",
+      "steps": [
+        {
+          "do": "call",
+          "script": "migros/add-product",
+          "with": {
+            "product": "{product}"
+          }
+        }
+      ]
+    }
+  ]
+}

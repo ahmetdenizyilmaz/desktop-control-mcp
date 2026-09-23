@@ -1,0 +1,170 @@
+{
+  "ButtonControl:Küçült": {
+    "file": "ButtonControl_Küçült.png",
+    "w": 90,
+    "h": 80,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1306949
+  },
+  "ButtonControl:Büyüt": {
+    "file": "ButtonControl_Büyüt.png",
+    "w": 92,
+    "h": 80,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1434164
+  },
+  "ButtonControl:Geri yükle": {
+    "file": "ButtonControl_Geri_yükle.png",
+    "w": 92,
+    "h": 80,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1457262
+  },
+  "ButtonControl:Kapat": {
+    "file": "ButtonControl_Kapat.png",
+    "w": 92,
+    "h": 80,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1457262
+  },
+  "PaneControl:-2,78": {
+    "file": "PaneControl_-2_78.png",
+    "w": 20,
+    "h": 20,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1732776
+  },
+  "PaneControl:2862,78": {
+    "file": "PaneControl_2862_78.png",
+    "w": 20,
+    "h": 20,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1732776
+  },
+  "PaneControl:-2,1686": {
+    "file": "PaneControl_-2_1686.png",
+    "w": 20,
+    "h": 20,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.178284
+  },
+  "PaneControl:2862,1686": {
+    "file": "PaneControl_2862_1686.png",
+    "w": 20,
+    "h": 20,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.180833
+  },
+  "PaneControl:12,0": {
+    "file": "PaneControl_12_0.png",
+    "w": 56,
+    "h": 82,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1868565
+  },
+  "ButtonControl:Yeni Sekme": {
+    "file": "ButtonControl_Yeni_Sekme.png",
+    "w": 56,
+    "h": 82,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1889052
+  },
+  "PaneControl:24,244": {
+    "file": "PaneControl_24_244.png",
+    "w": 64,
+    "h": 64,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.1952748
+  },
+  "ButtonControl:Geri": {
+    "file": "ButtonControl_Geri.png",
+    "w": 80,
+    "h": 68,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2087603
+  },
+  "ButtonControl:İleri": {
+    "file": "ButtonControl_İleri.png",
+    "w": 68,
+    "h": 68,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2117796
+  },
+  "ButtonControl:Yeniden Yükle": {
+    "file": "ButtonControl_Yeniden_Yükle.png",
+    "w": 68,
+    "h": 68,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2137883
+  },
+  "ButtonControl:Ana Sayfa": {
+    "file": "ButtonControl_Ana_Sayfa.png",
+    "w": 68,
+    "h": 68,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2137883
+  },
+  "PaneControl:2620,92": {
+    "file": "PaneControl_2620_92.png",
+    "w": 104,
+    "h": 68,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.233662
+  },
+  "ButtonControl:Ahmet Deniz": {
+    "file": "ButtonControl_Ahmet_Deniz.png",
+    "w": 68,
+    "h": 68,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2364182
+  },
+  "ButtonControl:Chrome": {
+    "file": "ButtonControl_Chrome.png",
+    "w": 80,
+    "h": 68,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.242711
+  },
+  "ToolBarControl:Kayıtlı Sekme Grupları": {
+    "file": "ToolBarControl_Kayıtlı_Sekme_Grupları.png",
+    "w": 72,
+    "h": 56,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2524784
+  },
+  "SeparatorControl:Ayırıcı": {
+    "file": "SeparatorControl_Ayırıcı.png",
+    "w": 36,
+    "h": 32,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2772162
+  },
+  "ButtonControl:https://www.youtube.com için adsız yer işareti": {
+    "file": "ButtonControl_https___www_youtube_com_için_adsız_yer_işareti.png",
+    "w": 56,
+    "h": 56,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2605753
+  },
+  "ButtonControl:ev": {
+    "file": "ButtonControl_ev.png",
+    "w": 102,
+    "h": 56,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2670543
+  },
+  "ButtonControl:java": {
+    "file": "ButtonControl_java.png",
+    "w": 118,
+    "h": 56,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2690876
+  },
+  "ButtonControl:Gizlenmiş yer işaretlerini içeren menü": {
+    "file": "ButtonControl_Gizlenmiş_yer_işaretlerini_içeren_menü.png",
+    "w": 56,
+    "h": 56,
+    "note": "auto from hwnd 791290",
+    "taught": 1790018048.2738755
+  }
+}

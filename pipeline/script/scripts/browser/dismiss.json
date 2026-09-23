@@ -1,0 +1,16 @@
+{
+  "name": "browser/dismiss",
+  "version": 1,
+  "description": "Clear the cookie banners and modals that swallow the first click on most sites. Every step is optional - none of them are reliably there.",
+  "params": {},
+  "trust": "trusted",
+  "steps": [
+    {"do": "click", "optional": true,
+     "target": {"any": ["Kabul Et", "T\u00fcm\u00fcn\u00fc Kabul Et", "Accept all", "Accept All", "I accept", "Tamam"],
+                "kind": "button", "area": "content"},
+     "note": "Cookie consent."},
+    {"do": "click", "optional": true,
+     "target": {"any": ["Kapat", "Close"], "kind": "button", "area": "content"},
+     "note": "A promo modal. area:content is LOAD-BEARING here - without it this matched Chrome's own window-close button at (2834,40) and the tab-close at (514,40), either of which would have ended the run by closing the browser. It only got away with it because two matches made it ambiguous."}
+  ]
+}

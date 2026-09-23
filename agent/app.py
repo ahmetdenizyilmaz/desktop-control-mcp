@@ -598,18 +598,22 @@ class Agent:
             if self._border is None:
                 self._border = overlay.border()
             self._border.show(color)
-            # The pointer follows the same state — a cartoon arrow with a
-            # halo in this colour, in place of the user's own arrow for as
-            # long as the agent has the machine. See core/pointer.py.
-            overlay.pointer_overlay().show(color)
+            # The drawn cursor follows the same state — red while touching
+            # the machine, blue otherwise, green when a person takes over —
+            # and goes to wherever each action lands, including UIA invokes
+            # and keystrokes that never move the real pointer. It replaces
+            # the user's own arrow for as long as the agent has the machine.
+            # See core/agent_cursor.py.
+            from core import agent_cursor
+            agent_cursor.show(color)
         except Exception:
             pass
 
     def _border_off(self) -> None:
         self._border_state = None
         try:
-            from core import overlay
-            overlay.pointer_hide()
+            from core import agent_cursor
+            agent_cursor.hide()
             if self._border is not None:
                 self._border.hide()
         except Exception:
@@ -1692,10 +1696,10 @@ def main() -> None:
             agent._border_off()
             if agent._border is not None:
                 agent._border.stop()
-            from core import overlay
-            overlay.pointer_stop()
-            # The pointer thread restores the user's cursor as it stops; this
-            # does it again from here in case that thread is already gone.
+            from core import agent_cursor, overlay
+            agent_cursor.stop()
+            # stop() restores the user's cursor; this does it again from
+            # here in case anything went wrong on the way.
             overlay.restore_system_cursor()
         except Exception:
             pass

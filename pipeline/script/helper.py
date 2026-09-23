@@ -1,0 +1,147 @@
+"""When a script is stuck: ask a stronger model, with a screenshot.
+
+The runner's own answer to a failed step is to fail it. That is right for
+a step that has a defect, and wrong for one that met a page nobody wrote a
+script for - a delivery-slot picker, a payment form, a dialog that was not
+there yesterday. For those the runner can ask Opus: here is the goal, here
+is what failed, here is the screen and the element list - reply with steps.
+
+The answer comes back IN THE SCRIPT FORMAT, and that is the safety of the
+whole design. It is parsed by the same validator as any script file and run
+by the same `_exec`, so the commit guard, the stop signal, `expect` and the
+keystroke-foreground check all still apply. The model can do nothing a
+script could not; it only saves writing the script in advance.
+
+Called through the Claude Code CLI (`claude -p --model opus`), which uses
+the login already on this machine, so no key sits in this repo. ~10-30 s a
+call, which is why it is the fallback and not the loop: `budget` caps how
+many a run may spend.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+from .schema import ScriptError, Step, _step
+
+STUCK = Path(__file__).resolve().parents[1] / ".stuck"
+
+LANGUAGE = """\
+Reply with ONE JSON object and nothing else:
+  {"done": true|false, "why": "<one sentence>", "steps": [ ... ]}
+done=true means the goal is ALREADY met on the screen now (then steps=[]).
+Otherwise give the next 1-6 steps. Step forms (JSON):
+  {"do":"click","target":SEL}            {"do":"type","into":SEL,"value":"text","then":"enter"}
+  {"do":"key","keys":"enter"|"ctrl+l"|"escape"|"tab"|"pagedown"}
+  {"do":"scroll","direction":"down"|"up","amount":3}
+  {"do":"wait","seconds":1.5}            {"do":"wait_for","target":SEL,"timeout":10}
+SEL is an object: {"text":"visible name","match":"exact"|"contains","kind":"button"|"link"|"edit"|"radio"|"checkbox"|"combobox"|"text"|"tab"|"listitem","id":"dom id","nth":1,"area":"content"}
+Rules: copy names/ids EXACTLY from the element list; prefer "id" when one is listed;
+add "area":"content" for anything inside the web page; use "nth" only when a name
+repeats (1 = first in reading order). Never invent coordinates. Keep it short:
+the screen is re-read after your steps and you will be asked again."""
+
+
+class OpusHelper:
+    """`rescue()` asks; `parse()` validates the answer into Steps."""
+
+    name = "opus"
+
+    def __init__(self, model: str = "opus", budget: int = 12,
+                 timeout: float = 150.0, log=print) -> None:
+        self.model = model
+        self.budget = budget
+        self.timeout = timeout
+        self.log = log
+        self.calls = 0
+        self.claude = shutil.which("claude")
+        STUCK.mkdir(exist_ok=True)
+
+    def _screenshot(self) -> Path | None:
+        try:
+            from vision.capture import Screen
+            from PIL import Image
+            f = Screen().grab()
+            im = getattr(f, "image", f)
+            if not hasattr(im, "save"):
+                im = Image.fromarray(im)
+            im = im.convert("RGB")
+            # Half size: plenty to read a page, a quarter of the tokens.
+            im = im.resize((im.width // 2, im.height // 2))
+            path = STUCK / f"stuck-{time.strftime('%H%M%S')}-{self.calls}.png"
+            im.save(path)
+            return path
+        except Exception:
+            return None
+
+    def rescue(self, goal: str, error: str, scene: list[str],
+               history: list[str] | None = None) -> dict:
+        if not self.claude or self.budget <= 0:
+            return {"done": False, "why": "no helper budget", "steps": []}
+        self.budget -= 1
+        self.calls += 1
+        shot = self._screenshot()
+        parts = [
+            "You are rescuing a desktop automation script on Windows. "
+            "Look at the screenshot, then answer.",
+            f"GOAL: {goal}",
+        ]
+        if error:
+            parts.append(f"WHAT FAILED: {error}")
+        if history:
+            parts.append("WHAT YOUR EARLIER STEPS DID:\n" + "\n".join(history))
+        if shot:
+            parts.append(f"SCREENSHOT (half size; element coordinates below "
+                         f"are full size): read the file {shot}")
+        parts.append("ELEMENTS ON SCREEN (kind, name, centre, id):\n"
+                     + "\n".join(scene))
+        parts.append(LANGUAGE)
+        prompt = "\n\n".join(parts)
+        t0 = time.time()
+        self.log(f"    [opus] asking ({len(scene)} elements) - {goal[:90]}")
+        try:
+            proc = subprocess.run(
+                [self.claude, "-p", "--model", self.model,
+                 "--output-format", "json", "--allowedTools", "Read",
+                 "--add-dir", str(STUCK)],
+                input=prompt, capture_output=True, text=True,
+                encoding="utf-8", timeout=self.timeout,
+                cwd=str(STUCK.parent), creationflags=0x08000000)
+            outer = json.loads(proc.stdout or "{}")
+            text = outer.get("result", "") or ""
+        except Exception as exc:
+            self.log(f"    [opus] failed: {exc}")
+            return {"done": False, "why": f"helper error: {exc}", "steps": []}
+        plan = _first_json(text)
+        self.log(f"    [opus] {time.time() - t0:.0f}s: done={plan.get('done')} "
+                 f"steps={len(plan.get('steps') or [])} "
+                 f"- {str(plan.get('why', ''))[:120]}")
+        return plan
+
+    def parse(self, plan: dict, where: str) -> list[Step]:
+        """Validate the answer exactly as a script file would be."""
+        out = []
+        for i, raw in enumerate(plan.get("steps") or []):
+            try:
+                out.append(_step(raw, f"{where}.opus[{i}]"))
+            except ScriptError as exc:
+                self.log(f"    [opus] step {i} rejected: {exc}")
+                break
+        return out
+
+
+def _first_json(text: str) -> dict:
+    """The JSON object in a reply, even wrapped in prose or a code fence."""
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return {"done": False, "why": "no JSON in reply", "steps": []}
+    try:
+        got = json.loads(m.group(0))
+        return got if isinstance(got, dict) else {}
+    except json.JSONDecodeError:
+        return {"done": False, "why": "unparseable reply", "steps": []}

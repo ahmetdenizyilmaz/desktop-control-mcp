@@ -1,0 +1,14 @@
+{
+  "name": "migros/search-ui",
+  "version": 1,
+  "description": "The same search, driven through the UI instead of the URL. Slower, and kept because not every app has an addressable search.",
+  "params": {"product": ""},
+  "trust": "draft",
+  "steps": [
+    {"do": "click", "target": {"id": "product-search-combobox--trigger"},
+     "note": "By DOM id: this control's NAME is a rotating advert."},
+    {"do": "key", "keys": "ctrl+a"},
+    {"do": "type", "value": "{product}", "then": "enter"},
+    {"do": "wait_for", "target": {"text": "{product}", "area": "content"}, "timeout": 25}
+  ]
+}

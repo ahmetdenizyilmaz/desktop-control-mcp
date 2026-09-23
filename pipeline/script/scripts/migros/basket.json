@@ -1,0 +1,25 @@
+{
+  "name": "migros/basket",
+  "version": 1,
+  "description": "Go to Sepetim and wait until its continue button is there.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "call",
+      "script": "browser/goto",
+      "with": {
+        "url": "https://www.migros.com.tr/sepetim",
+        "title": "Migros"
+      }
+    },
+    {
+      "do": "wait_for",
+      "target": {
+        "id": "checkout-summary-desktop-confirm-button"
+      },
+      "timeout": 25,
+      "note": "MEASURED id of the basket's 'Devam Et' button."
+    }
+  ]
+}

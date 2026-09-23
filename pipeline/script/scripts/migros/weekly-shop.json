@@ -1,0 +1,47 @@
+{
+  "name": "migros/weekly-shop",
+  "version": 1,
+  "description": "Open Migros and add ten products, each attempted independently. Failures are skipped and listed at the end.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "call",
+      "script": "migros/open",
+      "with": {}
+    },
+    {
+      "do": "repeat",
+      "for_each": [
+        "süt",
+        "peynir",
+        "yumurta",
+        "ekmek",
+        "makarna",
+        "pirinç",
+        "domates",
+        "elma",
+        "çay",
+        "kağıt havlu"
+      ],
+      "as": "product",
+      "steps": [
+        {
+          "do": "call",
+          "script": "migros/add-product",
+          "with": {
+            "product": "{product}"
+          }
+        }
+      ]
+    },
+    {
+      "do": "click",
+      "target": {
+        "id": "homepage-cart-button"
+      },
+      "optional": true,
+      "note": "Opens the basket by DOM id so the result can be read. Does NOT check out - that word is in the commit list and would stop for a human."
+    }
+  ]
+}

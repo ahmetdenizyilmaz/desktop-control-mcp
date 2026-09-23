@@ -1,0 +1,23 @@
+{
+  "name": "whatsapp/open-self-tab",
+  "version": 1,
+  "description": "Open WhatsApp Web in its own tab on the 'Message yourself' chat.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "call",
+      "script": "browser/new-tab",
+      "with": {
+        "url": "https://web.whatsapp.com",
+        "title": "WhatsApp"
+      },
+      "note": "Its OWN tab: the shop's tab must survive, because a bank's SMS page lives there and navigating away would kill the payment."
+    },
+    {
+      "do": "call",
+      "script": "whatsapp/self-chat",
+      "with": {}
+    }
+  ]
+}

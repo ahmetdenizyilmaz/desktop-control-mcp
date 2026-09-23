@@ -1,0 +1,97 @@
+{
+  "name": "errands/music-shop-checkout",
+  "version": 1,
+  "description": "Planned by Opus as ONE script: play La Serenissima, fill the Migros basket (Jev picks each product), send the exact list to 'Message yourself', wait for the person's 'buy', check out (delivery 19:00+, saved card), and relay the bank's SMS code. 'cancel' in the chat ends it 3 s later.",
+  "params": {"code": ""},
+  "trust": "draft",
+  "steps": [
+    {"do": "call", "script": "media/spotify-search-play", "with": {"query": "la serenissima"}},
+
+    {"do": "call", "script": "migros/open", "with": {}},
+
+    {"do": "repeat", "as": "product",
+     "for_each": ["süt", "peynir", "yumurta", "makarna", "pirinç", "domates", "elma", "çay",
+                  "kağıt havlu", "zeytin", "bal", "reçel", "salça", "ayçiçek yağı", "şeker",
+                  "un", "tuz", "deterjan", "şampuan"],
+     "steps": [{"do": "call", "script": "migros/add-product", "with": {"product": "{product}"}}],
+     "note": "Search terms, not products: Jev chooses WHICH result is the ordinary version of each."},
+
+    {"do": "repeat", "times": 1, "note": "Nescafe x6. One iteration so a failed add skips its five '+' - they would otherwise press the '+' of whatever was clicked before.",
+     "steps": [
+       {"do": "call", "script": "migros/add-this",
+        "with": {"product": "nescafe xpress vanilya",
+                 "goal": "a single Nescafe Xpress Vanilya (vanilla iced coffee) 250 ml can",
+                 "reject": "multipacks like 3 x 250 ml, other flavours, other brands"}},
+       {"do": "call", "script": "migros/more", "with": {}},
+       {"do": "call", "script": "migros/more", "with": {}},
+       {"do": "call", "script": "migros/more", "with": {}},
+       {"do": "call", "script": "migros/more", "with": {}},
+       {"do": "call", "script": "migros/more", "with": {}}
+     ]},
+
+    {"do": "repeat", "times": 1, "note": "Bread x3.",
+     "steps": [
+       {"do": "call", "script": "migros/add-this",
+        "with": {"product": "ekmek",
+                 "goal": "an ordinary loaf of everyday white bread (somun / sofra ekmeği)",
+                 "reject": "toast bread, baguettes, sourdough, whole-wheat, gluten-free, lavash, bazlama"}},
+       {"do": "call", "script": "migros/more", "with": {}},
+       {"do": "call", "script": "migros/more", "with": {}}
+     ]},
+
+    {"do": "repeat", "times": 1, "note": "'Some gofrets' = three of one ordinary chocolate wafer.",
+     "steps": [
+       {"do": "call", "script": "migros/add-this",
+        "with": {"product": "gofret",
+                 "goal": "an ordinary single chocolate wafer (çikolatalı gofret) snack bar",
+                 "reject": "multipacks, boxes, gift sets, diet or protein versions"}},
+       {"do": "call", "script": "migros/more", "with": {}},
+       {"do": "call", "script": "migros/more", "with": {}}
+     ]},
+
+    {"do": "call", "script": "migros/basket", "with": {}},
+
+    {"do": "call", "script": "whatsapp/open-self-tab", "with": {}},
+    {"do": "type", "into": {"text": "Type a message", "kind": "edit"},
+     "value": "Migros sepetine eklenenler (tam ürün adlari):", "lines_from": "picks", "then": "enter",
+     "note": "The EXACT products that verifiably went in, with quantities - from the runner's tally, not from the search terms."},
+    {"do": "wait", "seconds": 0.6},
+    {"do": "call", "script": "whatsapp/say",
+     "with": {"message": "Sepet hazir. Odemeye gecmem icin bu sohbete b-u-y yaz. Durdurmak icin c-a-n-c-e-l."},
+     "note": "Spelled with hyphens so this run's OWN message can never be counted as the person's answer."},
+
+    {"do": "wait_message", "words": ["buy"], "stop_words": ["cancel"], "stop_after": 3,
+     "authorizes": true, "timeout": 3600,
+     "note": "The go-ahead. Only a NEW 'buy' counts; it unlocks the commit guard for checkout."},
+    {"do": "call", "script": "whatsapp/say",
+     "with": {"message": "Tamam - teslimat 19:00 sonrasi, kayitli kart ile odemeye geciyorum."}},
+
+    {"do": "call", "script": "browser/switch-tab", "with": {"title": "Migros"}},
+    {"do": "call", "script": "migros/basket", "with": {}},
+    {"do": "click", "target": {"id": "checkout-summary-desktop-confirm-button"}, "note": "Devam Et"},
+    {"do": "wait", "seconds": 2.5},
+    {"do": "assist", "rounds": 6,
+     "goal": "On the Migros checkout: keep the delivery address that is already selected, and choose a DELIVERY TIME SLOT that starts at 19:00 or later (the earliest such slot that is available, today if possible). Then continue to the payment step. Done when the payment step (card choice) is on screen."},
+    {"do": "assist", "rounds": 6,
+     "goal": "On the Migros payment step: choose the SAVED card that is already on the account (do not type any card numbers), tick any required agreement / contract checkbox, and press the final order / payment button. Done when the page asks for an SMS / 3-D Secure verification code, OR shows that the order was placed."},
+
+    {"do": "if", "present": {"any": ["SMS", "Doğrulama", "doğrulama kodu", "3D Secure", "Tek Kullanımlık", "Şifre"]},
+     "then": [
+       {"do": "call", "script": "browser/switch-tab", "with": {"title": "WhatsApp"}},
+       {"do": "call", "script": "whatsapp/say",
+        "with": {"message": "Banka SMS kodu istiyor - kodu buraya yaz. Durdurmak icin c-a-n-c-e-l."}},
+       {"do": "wait_message", "code_as": "code", "stop_words": ["cancel"], "stop_after": 3, "timeout": 900},
+       {"do": "assist", "rounds": 4,
+        "goal": "Switch to the browser tab with the bank's SMS / 3-D Secure verification page (NOT WhatsApp - use ctrl+shift+a tab search if needed), type the code {code} into its code field and submit it. Done when the page has moved past verification."},
+       {"do": "call", "script": "browser/switch-tab", "with": {"title": "WhatsApp"}},
+       {"do": "call", "script": "whatsapp/say", "with": {"message": "Kod girildi."}}
+     ],
+     "else": [
+       {"do": "call", "script": "browser/switch-tab", "with": {"title": "WhatsApp"}},
+       {"do": "call", "script": "whatsapp/say", "with": {"message": "Odeme adimi SMS istemeden bitti - Migros'ta siparisi kontrol et."}}
+     ]},
+
+    {"do": "wait_message", "words": ["cancel"], "stop_words": ["cancel"], "stop_after": 3, "timeout": 600,
+     "note": "Hold until the person closes it; 'cancel' ends the run 3 s later."}
+  ]
+}

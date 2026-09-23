@@ -1,0 +1,45 @@
+{
+  "name": "migros/add-this",
+  "version": 1,
+  "description": "Search one term and add the result that fits a GOAL you describe - for products where 'the ordinary version' is the wrong question (a vanilla coffee is flavoured on purpose).",
+  "params": {
+    "product": "",
+    "goal": "",
+    "reject": ""
+  },
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "call",
+      "script": "migros/search",
+      "with": {
+        "product": "{product}"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Ürünü sepete ekle",
+        "match": "exact",
+        "kind": "button",
+        "area": "content"
+      },
+      "pick": {
+        "goal": "{goal}",
+        "reject": "{reject}",
+        "min_margin": 0.25,
+        "on_unsure": "top",
+        "max_options": 10
+      },
+      "expect": {
+        "text": "Sepetteki ürün sayısını arttır",
+        "match": "exact",
+        "kind": "button",
+        "area": "content",
+        "nearest": "last"
+      },
+      "timeout": 12,
+      "note": "expect nearest:last - the stepper must appear WHERE this click landed. A stepper anywhere on the page is not evidence: items already in the basket show one too."
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "name": "migros/add-product",
+  "version": 1,
+  "description": "Search for one product and add the RIGHT result to the basket - decided by meaning, not by position.",
+  "params": {
+    "product": ""
+  },
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "call",
+      "script": "migros/search",
+      "with": {
+        "product": "{product}"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Ürünü sepete ekle",
+        "match": "exact",
+        "kind": "button",
+        "area": "content"
+      },
+      "pick": {
+        "goal": "the ordinary everyday version of \"{product}\" that belongs in a normal Turkish weekly shop",
+        "reject": "flavoured or dessert versions, lattes, plant-based substitutes (oat/almond/soy/coconut), lactose-free or specialty diet versions, gift packs and bulk catering sizes",
+        "min_margin": 0.25,
+        "on_unsure": "top",
+        "max_options": 10
+      },
+      "expect": {
+        "text": "Sepetteki ürün sayısını arttır",
+        "match": "exact",
+        "kind": "button",
+        "area": "content",
+        "nearest": "last"
+      },
+      "timeout": 12,
+      "note": "Position picked a latte, a labne and a baget on three real searches - all scored 0.000. `pick` labels each identical add button with its own card title and asks which one MEANS the product. on_unsure:top because a low margin here means 'several breads are equally fine', not 'I cannot tell': a live ekmek search scored 24 near-identical breads at margin 0.05. The top SCORED option is still a bread; the page's first was a sourdough baguette. max_options:10 keeps probability from spreading across two dozen siblings. expect nearest:last - a stepper ANYWHERE is not evidence once the basket has items; it must appear where this click landed."
+    }
+  ]
+}

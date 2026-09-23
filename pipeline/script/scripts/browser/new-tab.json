@@ -1,0 +1,11 @@
+{
+  "name": "browser/new-tab",
+  "version": 1,
+  "description": "Open a fresh tab and go to a URL in it, leaving whatever was open alone.",
+  "params": {"url": "", "title": ""},
+  "trust": "trusted",
+  "steps": [
+    {"do": "key", "keys": "ctrl+t"},
+    {"do": "call", "script": "browser/goto", "with": {"url": "{url}", "title": "{title}"}}
+  ]
+}

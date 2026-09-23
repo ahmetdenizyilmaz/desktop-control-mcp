@@ -1,0 +1,15 @@
+{
+  "name": "migros/search",
+  "version": 1,
+  "description": "Search Migros for one term by URL. One navigation instead of click-select-type-enter, and it cannot land on the wrong page.",
+  "params": {"product": ""},
+  "trust": "draft",
+  "steps": [
+    {"do": "call", "script": "browser/goto",
+     "with": {"url": "https://www.migros.com.tr/arama?q={product}",
+              "title": "{product} - Migros"},
+     "note": "MEASURED: migros.com.tr/ is the corporate hub page and has NO search box - only /arama does. Waiting on the title '{product} - Migros' is a real load signal, unlike 'Migros', which every page on the site shares."},
+    {"do": "wait_for", "target": {"text": "{product}", "area": "content"}, "timeout": 25,
+     "note": "Text-only selector, so this is answered from PIXELS - no tree walk. It also stops the next step clicking the previous search's results."}
+  ]
+}

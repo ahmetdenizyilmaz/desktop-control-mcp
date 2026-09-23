@@ -135,6 +135,90 @@ def _cursor() -> tuple[int, int]:
     return (p.x, p.y)
 
 
+# ---------------------------------------------------------------- announce
+
+#: Called with (kind, x, y) just BEFORE an action lands, in physical screen
+#: pixels. kind is "click", "type", "key", "scroll" or "drag".
+#:
+#: This exists because most of what this module does never moves the real
+#: pointer: a UIA Invoke activates a button in place, and a keystroke goes
+#: wherever focus is. Anything that wants to SHOW where the agent is acting
+#: (the app's drawn cursor) listens here — every acting tool funnels through
+#: these few functions, so one hook covers click, do_steps, type_text,
+#: press_key, replay and the rest without touching each tool.
+#:
+#: Announced BEFORE acting on purpose, so a drawn cursor is already on its
+#: way when the action happens instead of arriving after it.
+action_hooks: list = []
+
+
+def _announce(kind: str, point) -> None:
+    if not action_hooks or point is None:
+        return
+    for fn in list(action_hooks):
+        try:
+            fn(kind, int(point[0]), int(point[1]))
+        except Exception:
+            pass           # a display hook must never break an action
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.wintypes.DWORD),
+                ("flags", ctypes.wintypes.DWORD),
+                ("hwndActive", ctypes.wintypes.HWND),
+                ("hwndFocus", ctypes.wintypes.HWND),
+                ("hwndCapture", ctypes.wintypes.HWND),
+                ("hwndMenuOwner", ctypes.wintypes.HWND),
+                ("hwndMoveSize", ctypes.wintypes.HWND),
+                ("hwndCaret", ctypes.wintypes.HWND),
+                ("rcCaret", ctypes.wintypes.RECT)]
+
+
+def focus_point() -> tuple[int, int] | None:
+    """Where a keystroke will land right now, best evidence first.
+
+      1. the text caret, when the focused window exposes one — exactly
+         where typing appears (classic Win32 edits, Notepad, most dialogs)
+      2. the centre of the UIA focused element — Chrome, WinUI and other
+         apps that draw their own caret expose no Win32 caret, but they do
+         report which control has focus
+      3. the centre of the foreground window, so there is always an answer
+
+    Only called when something is listening to `action_hooks`, so a run
+    without the drawn cursor pays nothing for it.
+    """
+    try:
+        fg = user32.GetForegroundWindow()
+        tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        info = _GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if tid and user32.GetGUIThreadInfo(tid, ctypes.byref(info)) \
+                and info.hwndCaret:
+            r = info.rcCaret
+            pt = ctypes.wintypes.POINT(r.left, (r.top + r.bottom) // 2)
+            if user32.ClientToScreen(info.hwndCaret, ctypes.byref(pt)):
+                return (pt.x, pt.y)
+    except Exception:
+        pass
+    try:
+        import uiautomation as auto
+        c = auto.GetFocusedControl()
+        if c is not None:
+            b = c.BoundingRectangle
+            if b.right > b.left and b.bottom > b.top:
+                return ((b.left + b.right) // 2, (b.top + b.bottom) // 2)
+    except Exception:
+        pass
+    try:
+        fg = user32.GetForegroundWindow()
+        if fg:
+            x1, y1, x2, y2 = window_rect(fg)
+            return ((x1 + x2) // 2, (y1 + y2) // 2)
+    except Exception:
+        pass
+    return None
+
+
 # ---------------------------------------------------------------- clicking
 
 def _try_invoke(el: Element) -> tuple[bool, str]:
@@ -243,6 +327,9 @@ def pointer_path(strokes: list[list[tuple[int, int]]], action: str = "drag",
     base = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
     method = f"sendinput:{action}"
     events = 0
+    first = next((s[0] for s in strokes if s), None)
+    if first is not None:
+        _announce("drag" if action == "drag" else "click", first)
 
     def fail(detail: str, release_at: tuple[int, int] | None) -> ActResult:
         # Never leave a button held: an app with the mouse stuck down is
@@ -332,6 +419,7 @@ def click(el: Element, button: str = "left", prefer: str = "invoke",
     """
     c0 = _cursor()
     t0 = time.time()
+    _announce("click", el.click_point())
 
     if prefer == "invoke" and button == "left":
         ok, how = _try_invoke(el)
@@ -378,6 +466,7 @@ def double_click(el: Element) -> ActResult:
     c0 = _cursor()
     t0 = time.time()
     x, y = el.click_point()
+    _announce("click", (x, y))
     nx, ny = _norm(x, y)
     base = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
     ok = _send([_mouse(nx, ny, base),
@@ -395,6 +484,7 @@ def scroll(el: Element | None, direction: str = "down", amount: int = 3) -> ActR
     inputs = []
     if el is not None:
         x, y = el.click_point()
+        _announce("scroll", (x, y))
         nx, ny = _norm(x, y)
         inputs.append(_mouse(nx, ny, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
                              | MOUSEEVENTF_VIRTUALDESK))
@@ -420,6 +510,7 @@ def drag(a: Element, b: Element, steps: int = 24) -> ActResult:
     x1, y1 = a.click_point()
     x2, y2 = b.click_point()
     base = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+    _announce("drag", (x1, y1))
 
     nx, ny = _norm(x1, y1)
     _send([_mouse(nx, ny, base), _mouse(nx, ny, base | MOUSEEVENTF_LEFTDOWN)])
@@ -431,6 +522,7 @@ def drag(a: Element, b: Element, steps: int = 24) -> ActResult:
         time.sleep(0.012)
     nx, ny = _norm(x2, y2)
     ok = _send([_mouse(nx, ny, base | MOUSEEVENTF_LEFTUP)])
+    _announce("drag", (x2, y2))
     return ActResult(ok, "sendinput:drag", (time.time() - t0) * 1000,
                      _cursor() != c0)
 
@@ -530,6 +622,8 @@ def type_text(text: str, el: Element | None = None) -> ActResult:
     action there is. A newline now submits.
     """
     t0 = time.time()
+    if action_hooks:
+        _announce("type", el.click_point() if el is not None else focus_point())
     pieces = _segment(text)
     has_keys = any(p in ("\n", "\t") for p in pieces)
 
@@ -605,6 +699,10 @@ def _press_seq(vk: int, mods: list[int]) -> list[INPUT]:
 
 def press_key(key: str, presses: int = 1) -> ActResult:
     t0 = time.time()
+    if action_hooks:
+        # Enter and friends land wherever focus is; show THAT, not wherever
+        # the real pointer happens to be resting.
+        _announce("key", focus_point())
     k = key.strip()
     vk, mods = VK.get(k.lower()), []
     if vk is None:
@@ -636,6 +734,8 @@ def _split_combo(combo: str) -> list[str]:
 def send_keys(combo: str, times: int = 1) -> ActResult:
     """Modifier combo, e.g. ctrl+shift+s — pressed and released as one batch."""
     t0 = time.time()
+    if action_hooks:
+        _announce("key", focus_point())
     parts = [p.strip().lower() for p in _split_combo(combo)]
     if not parts:
         return ActResult(False, "send_keys", 0, detail=f"empty combo {combo!r}")

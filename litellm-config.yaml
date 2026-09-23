@@ -1,0 +1,65 @@
+# LiteLLM proxy — lets the AGI Agent (and Claude Code underneath it) drive a
+# LOCAL model.
+#
+#   AGI Agent -> Claude Code -> LiteLLM :4000 -> Ollama :11434 -> qwen3.8:27b
+#                 (Anthropic /v1/messages)       (OpenAI /v1/chat/completions)
+#
+# Claude Code only speaks Anthropic's wire format; Ollama only speaks OpenAI's.
+# This proxy is the translator between them.
+#
+# The "*" model name is deliberate: Claude Code asks for whatever model it is
+# configured with (claude-sonnet-…, claude-opus-…), and there is no way to make
+# it ask for "qwen". The wildcard routes EVERY requested name to the local
+# model, so the app's Model box can be left on Default.
+#
+# Run:  litellm --config litellm-config.yaml --port 4000
+# Then in the app: Settings -> Local / custom endpoint -> http://localhost:4000
+
+model_list:
+  # Anything Claude Code asks for -> the local 27B.
+  - model_name: "*"
+    litellm_params:
+      model: ollama_chat/qwen3.8:27b
+      api_base: http://localhost:11434
+      # The desktop tools send long UI trees; give the model room to see them.
+      # qwen3.8:27b reports a 262144-token context, so this is well within it.
+      num_ctx: 32768
+
+  # An explicit name too, if you want to select it deliberately.
+  - model_name: qwen3.8-27b
+    litellm_params:
+      model: ollama_chat/qwen3.8:27b
+      api_base: http://localhost:11434
+      num_ctx: 32768
+
+  # Google Gemini, by name. Needs GEMINI_API_KEY in the environment that runs
+  # litellm (https://aistudio.google.com/apikey). Pick the name in the app's
+  # Model box — the dropdown reads this list from the proxy. The wildcard
+  # above still sends Default to the local model, so nothing else changes.
+  #
+  #   gemini-3.8-flash        the one to try first: capable enough for tool
+  #                           use and screenshots, $0.75/M in, $3.75/M out
+  #                           (promotional to 31 Dec 2026, doubles after)
+  #   gemini-3.5-flash-lite   the cheap one: $0.30/M in, $2.50/M out
+  #   gemini-3.1-pro-preview  the strong one: $2/M in, $12/M out (<=200k)
+  - model_name: gemini-3.8-flash
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: gemini/gemini-3.1-pro-preview
+      api_key: os.environ/GEMINI_API_KEY
+
+litellm_settings:
+  # A local model is slower than an API; do not give up on it early.
+  request_timeout: 600
+  drop_params: true          # ignore Anthropic-only params Ollama rejects
+
+general_settings:
+  # No auth on a loopback proxy. The app still sends a token; it is ignored.
+  master_key: null

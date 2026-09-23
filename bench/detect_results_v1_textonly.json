@@ -1,0 +1,42 @@
+[
+  {
+    "method": "A_vision",
+    "latency_s": 87.821,
+    "n_elements": 213,
+    "found": 14,
+    "total": 20,
+    "recall": 0.7,
+    "hit_rate": 0.6,
+    "mean_err_px": 13.9
+  },
+  {
+    "method": "B_uia",
+    "latency_s": 0.501,
+    "n_elements": 28,
+    "found": 20,
+    "total": 20,
+    "recall": 1.0,
+    "hit_rate": 1.0,
+    "mean_err_px": 0.0
+  },
+  {
+    "method": "C_win32",
+    "latency_s": 0.002,
+    "n_elements": 22,
+    "found": 20,
+    "total": 20,
+    "recall": 1.0,
+    "hit_rate": 1.0,
+    "mean_err_px": 0.0
+  },
+  {
+    "method": "D_ocr",
+    "latency_s": 14.615,
+    "n_elements": 204,
+    "found": 14,
+    "total": 20,
+    "recall": 0.7,
+    "hit_rate": 0.6,
+    "mean_err_px": 14.3
+  }
+]

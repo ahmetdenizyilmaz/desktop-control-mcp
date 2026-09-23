@@ -449,9 +449,12 @@ class Browser:
             for (let d = 0; d < 3 && p && !wrapper; d++, p = p.parentElement) {
               wrapper = (p.getAttribute('aria-label') || '').trim();
             }
+            // Never name a password box after what is typed in it — see the
+            // same guard in SNAPSHOT_JS.
+            const secret = (el.getAttribute('type') || '').toLowerCase() === 'password';
             const name = (el.getAttribute('aria-label') || el.innerText
-                          || el.value || wrapper || el.placeholder
-                          || el.title || '').trim();
+                          || (secret ? '' : el.value) || wrapper
+                          || el.placeholder || el.title || '').trim();
             out.push({
               role: el.getAttribute('role') || el.tagName.toLowerCase(),
               name: name.slice(0, 80),
@@ -507,9 +510,16 @@ class Browser:
         for (let d = 0; d < 3 && par && !wrapper; d++, par = par.parentElement) {
           wrapper = (par.getAttribute('aria-label') || '').trim();
         }
+        // A password is never read, by either route. RECORD_JS below has
+        // always refused to capture one; this snapshot did not, in two
+        // places — the `value` field, and the last link of the name chain,
+        // where a password box with no label would be NAMED after its own
+        // contents. A snapshot goes to the model, and on the fast path to a
+        // third-party decision API and a plaintext journal on disk.
+        const secret = (el.getAttribute('type') || '').toLowerCase() === 'password';
         const name = (el.getAttribute('aria-label') || el.innerText
                       || wrapper || el.placeholder || el.title
-                      || el.getAttribute('name') || el.value || '')
+                      || el.getAttribute('name') || (secret ? '' : el.value) || '')
                      .replace(/\s+/g, ' ').trim().slice(0, 70);
         el.setAttribute('data-da-idx', String(i));
         out.push({
@@ -518,7 +528,8 @@ class Browser:
           type: (el.getAttribute('type') || '').toLowerCase(),
           role: el.getAttribute('role') || '',
           name: name,
-          value: (tag === 'select' || tag === 'input' || tag === 'textarea')
+          value: (!secret && (tag === 'select' || tag === 'input'
+                              || tag === 'textarea'))
                  ? String(el.value || '').slice(0, 40) : '',
           checked: !!el.checked,
           disabled: !!el.disabled,

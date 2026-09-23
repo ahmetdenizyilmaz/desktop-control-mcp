@@ -1,0 +1,26 @@
+{
+  "name": "browser/goto",
+  "version": 1,
+  "description": "Put a URL in the address bar of the browser that is already in front, and go. The one shortcut every web script starts with.",
+  "params": {"url": "", "title": ""},
+  "trust": "trusted",
+  "steps": [
+    {
+      "do": "key",
+      "keys": "ctrl+l",
+      "note": "Focuses and selects the whole address bar in Chrome, Edge and Firefox alike. Finding it as an element instead would be three different selectors and would break on a redesign."
+    },
+    {
+      "do": "type",
+      "value": "{url}",
+      "then": "enter",
+      "note": "No `into`: ctrl+l already put the caret there."
+    },
+    {
+      "do": "focus",
+      "window": "{title}",
+      "timeout": 45,
+      "note": "Waits for the page to actually load AND re-points the scene at the loaded window, which a bare wait would not do."
+    }
+  ]
+}

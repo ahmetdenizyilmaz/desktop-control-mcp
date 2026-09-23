@@ -1,0 +1,26 @@
+{
+  "name": "browser/switch-tab",
+  "version": 2,
+  "description": "Bring an open tab to the front by clicking it in the tab strip.",
+  "params": {
+    "title": ""
+  },
+  "trust": "trusted",
+  "steps": [
+    {
+      "do": "click",
+      "target": {
+        "text": "{title}",
+        "kind": "tab",
+        "nth": 1
+      },
+      "note": "MEASURED: Chrome's tab strip items are UIA tabs named by title ('Migros', 'WhatsApp') at y=0-82. nth 1 in reading order is the strip, above any tabs the PAGE draws (Migros's own 'Migros Ekstra Ürünleri!' tabs also contain the word). v1 used ctrl+shift+a tab search: the popup filtered but enter did not switch, and a click inside it did not register."
+    },
+    {
+      "do": "focus",
+      "window": "{title}",
+      "timeout": 10,
+      "note": "The window title is the active tab's, so this PROVES the switch."
+    }
+  ]
+}

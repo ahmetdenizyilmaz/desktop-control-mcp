@@ -1,0 +1,49 @@
+{
+  "name": "whatsapp/send-bought",
+  "version": 1,
+  "description": "GENERATED 2026-09-23 00:31 from the shop's picks: send each of the 20 products added to the basket to 'Message yourself'.",
+  "params": {},
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "call",
+      "script": "whatsapp/open-self",
+      "with": {}
+    },
+    {
+      "do": "repeat",
+      "for_each": [
+        "Migros %3 Yağlı Uht Süt 1L",
+        "İçim Tam Yağlı Beyaz Peynir 500 G",
+        "Mlife Kafessiz M Boy Tavuk Yumurtası 10'lu (53-62 G)",
+        "Sofra E...",
+        "Pastavilla Spaghetti Makarna 500 G",
+        "Reis Osmancık Pirinç 1 Kg",
+        "Domates Pembe Kg",
+        "Elma Golden Kg",
+        "Çaykur Filiz Çay 500 G",
+        "Viva Havlu 6'lı",
+        "Cem Ayvalık Taş Kırma Zeytin 400G 291-350 Ad/kg",
+        "Balparmak Yayla Çiçek Balı 460 G",
+        "Migros Vişne Reçeli 380 G",
+        "Öncü Domates Salçası Cam 700 G",
+        "Komili Ayçiçek Yağı 1 L",
+        "Migros Küp Şeker 1 Kg",
+        "Mutlu Un 2 Kg",
+        "Migros İyotlu Sofra Tuzu 750 G",
+        "Omo Express Fresh Renkliler ve Beyazlar Sıvı Deterjan 840 Ml",
+        "Head & Shoulders Klasik Bakım 2in1 Şampuan 300 Ml"
+      ],
+      "as": "product",
+      "steps": [
+        {
+          "do": "call",
+          "script": "whatsapp/send-self",
+          "with": {
+            "message": "{product}"
+          }
+        }
+      ]
+    }
+  ]
+}

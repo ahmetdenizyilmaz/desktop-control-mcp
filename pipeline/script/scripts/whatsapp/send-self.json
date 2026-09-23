@@ -1,0 +1,13 @@
+{
+  "name": "whatsapp/send-self",
+  "version": 1,
+  "description": "Send one message in the open chat.",
+  "params": {"message": ""},
+  "trust": "draft",
+  "steps": [
+    {"do": "click", "target": {"text": "Type a message", "kind": "edit"},
+     "note": "Clicked every time rather than trusted to still have focus: a notification or a stray click would otherwise send the rest of the list somewhere else."},
+    {"do": "type", "value": "{message}", "then": "enter"},
+    {"do": "wait", "seconds": 0.35}
+  ]
+}

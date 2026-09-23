@@ -3,10 +3,12 @@ pyautogui
 mss
 Pillow
 pystray
-mcp
+mcp<2
 psutil
 ultralytics
 transformers>=4.44.0,<4.49.0
+timm
+einops
 huggingface_hub
 easyocr
 torch

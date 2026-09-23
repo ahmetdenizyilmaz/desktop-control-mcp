@@ -1,0 +1,160 @@
+{
+  "name": "errands/checkout-continue",
+  "version": 1,
+  "description": "Resume errands/music-shop-checkout at the checkout, after the tab switch failed. Asks for 'buy' again: authorization is per run, and money is not spent on the strength of a previous run's message.",
+  "params": {
+    "code": ""
+  },
+  "trust": "draft",
+  "steps": [
+    {
+      "do": "focus",
+      "window": "WhatsApp",
+      "timeout": 10
+    },
+    {
+      "do": "call",
+      "script": "whatsapp/say",
+      "with": {
+        "message": "Migros sekmesine gecerken takildim, duzelttim. Odemeye devam etmem icin tekrar b-u-y yaz."
+      }
+    },
+    {
+      "do": "wait_message",
+      "words": [
+        "buy"
+      ],
+      "stop_words": [
+        "cancel"
+      ],
+      "stop_after": 3,
+      "authorizes": true,
+      "timeout": 3600
+    },
+    {
+      "do": "call",
+      "script": "whatsapp/say",
+      "with": {
+        "message": "Tamam - teslimat 19:00 sonrasi, kayitli kart ile odemeye geciyorum."
+      }
+    },
+    {
+      "do": "call",
+      "script": "browser/switch-tab",
+      "with": {
+        "title": "Migros"
+      }
+    },
+    {
+      "do": "call",
+      "script": "migros/basket",
+      "with": {}
+    },
+    {
+      "do": "click",
+      "target": {
+        "id": "checkout-summary-desktop-confirm-button"
+      },
+      "note": "Devam Et"
+    },
+    {
+      "do": "wait",
+      "seconds": 2.5
+    },
+    {
+      "do": "assist",
+      "rounds": 6,
+      "goal": "On the Migros checkout: keep the delivery address that is already selected, and choose a DELIVERY TIME SLOT that starts at 19:00 or later (the earliest such slot that is available, today if possible). Then continue to the payment step. Done when the payment step (card choice) is on screen."
+    },
+    {
+      "do": "assist",
+      "rounds": 6,
+      "goal": "On the Migros payment step: choose the SAVED card that is already on the account (do not type any card numbers), tick any required agreement / contract checkbox, and press the final order / payment button. Done when the page asks for an SMS / 3-D Secure verification code, OR shows that the order was placed."
+    },
+    {
+      "do": "if",
+      "present": {
+        "any": [
+          "SMS",
+          "Doğrulama",
+          "doğrulama kodu",
+          "3D Secure",
+          "Tek Kullanımlık",
+          "Şifre"
+        ]
+      },
+      "then": [
+        {
+          "do": "call",
+          "script": "browser/switch-tab",
+          "with": {
+            "title": "WhatsApp"
+          }
+        },
+        {
+          "do": "call",
+          "script": "whatsapp/say",
+          "with": {
+            "message": "Banka SMS kodu istiyor - kodu buraya yaz. Durdurmak icin c-a-n-c-e-l."
+          }
+        },
+        {
+          "do": "wait_message",
+          "code_as": "code",
+          "stop_words": [
+            "cancel"
+          ],
+          "stop_after": 3,
+          "timeout": 900
+        },
+        {
+          "do": "assist",
+          "rounds": 4,
+          "goal": "Switch to the browser tab with the bank's SMS / 3-D Secure verification page (NOT WhatsApp - use ctrl+shift+a tab search if needed), type the code {code} into its code field and submit it. Done when the page has moved past verification."
+        },
+        {
+          "do": "call",
+          "script": "browser/switch-tab",
+          "with": {
+            "title": "WhatsApp"
+          }
+        },
+        {
+          "do": "call",
+          "script": "whatsapp/say",
+          "with": {
+            "message": "Kod girildi."
+          }
+        }
+      ],
+      "else": [
+        {
+          "do": "call",
+          "script": "browser/switch-tab",
+          "with": {
+            "title": "WhatsApp"
+          }
+        },
+        {
+          "do": "call",
+          "script": "whatsapp/say",
+          "with": {
+            "message": "Odeme adimi SMS istemeden bitti - Migros'ta siparisi kontrol et."
+          }
+        }
+      ]
+    },
+    {
+      "do": "wait_message",
+      "words": [
+        "cancel"
+      ],
+      "stop_words": [
+        "cancel"
+      ],
+      "stop_after": 3,
+      "timeout": 600,
+      "note": "Hold until the person closes it; 'cancel' ends the run 3 s later."
+    }
+  ]
+}
