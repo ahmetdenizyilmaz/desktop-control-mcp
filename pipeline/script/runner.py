@@ -182,7 +182,10 @@ class Runner:
                  chooser: "choose_mod.Chooser | None" = None,
                  cursor: "Any | None" = None,
                  helper: "Any | None" = None,
-                 dry_run: bool = False) -> None:
+                 dry_run: bool = False,
+                 honour_trust: bool = True,
+                 rescue_tries: int = 1,
+                 skip_items: "set[str] | None" = None) -> None:
         self.r = resolved
         self.watcher = watcher
         self.act = actuator
@@ -203,6 +206,15 @@ class Runner:
         #: and by `assist` steps. None = a stuck step simply fails.
         self.helper = helper
         self._rescuing = False
+        #: False = even a TRUSTED script asks before a commitment. The
+        #: app's "Supervised" level: trust records how well a script has
+        #: behaved, the person decides whether that is enough to spend money.
+        self.honour_trust = honour_trust
+        #: How many times the helper may try one stuck step, each try told
+        #: what the earlier ones did.
+        self.rescue_tries = max(1, int(rescue_tries))
+        #: `for_each` items already done by an earlier, interrupted run.
+        self.skip_items = set(skip_items or ())
         #: Set by a `wait_message` with `authorizes: true`: the person wrote
         #: the go-ahead in their own chat. Unlocks the commit guard.
         self.authorized = ""
@@ -316,14 +328,31 @@ class Runner:
         only do what a script could have done. Success is judged the same
         way as the original: the step's own `expect`, when it has one.
         """
+        history: list[str] = []
+        for attempt in range(self.rescue_tries):
+            if self.helper.budget <= 0:
+                break
+            got = self._rescue_once(step, values, where, depth, error,
+                                    history, attempt)
+            if got:
+                return got
+        return ""
+
+    def _rescue_once(self, step: Step, values: dict[str, str], where: str,
+                     depth: int, error: str, history: list[str],
+                     attempt: int) -> str:
+        """One try. `history` carries what earlier tries did, so a second
+        try is not the first one again."""
         from .library import step_json
         self._rescuing = True
         self._show("thinking")
+        n_before = len(self.report.outcomes)
         try:
             plan = self.helper.rescue(
                 goal=(f"Finish this step, which failed: {step_json(step)} "
                       f"(params {values})"),
-                error=error, scene=self._scene_rows())
+                error=error, scene=self._scene_rows(),
+                history=history or None)
             if plan.get("done"):
                 # The helper looked and says the step's purpose is already
                 # met. Believe it only as far as the step's own check does.
@@ -334,15 +363,22 @@ class Runner:
                 return f"{self.helper.name}: already done - {note}"
             steps = self.helper.parse(plan, where)
             if not steps:
+                history.append(f"try {attempt + 1}: no usable steps "
+                               f"({str(plan.get('why', ''))[:120]})")
                 return ""
             for i, child in enumerate(steps):
-                self._exec(child, values, f"{where}.rescue[{i}]", depth)
+                self._exec(child, values,
+                           f"{where}.rescue{attempt + 1}[{i}]", depth)
             if step.expect is not None:
                 self._verify(step, values, where)
             note = str(plan.get("why", ""))[:160]
             self.report.rescued.append(f"{where}: {note}")
             return f"rescued by {self.helper.name}: {note}"
-        except (StepFailed, ScriptError):
+        except (StepFailed, ScriptError) as exc:
+            done = [o.detail[:100] for o in self.report.outcomes[n_before:]
+                    if o.ok]
+            history.append(f"try {attempt + 1} FAILED: {str(exc)[:160]}"
+                           + (f" (after: {'; '.join(done)})" if done else ""))
             return ""
         finally:
             self._rescuing = False
@@ -700,7 +736,7 @@ class Runner:
         word = guard.is_commit(el.name, el.value, el.automation_id)
         if not word:
             return
-        trusted = (self.r.trust == Trust.TRUSTED
+        trusted = (self.honour_trust and self.r.trust == Trust.TRUSTED
                    and not self.r.imported)
         if trusted:
             return
@@ -790,7 +826,9 @@ class Runner:
         """
         lines = [header] if header else []
         for n, (label, qty) in enumerate(self.report.bought.items(), 1):
-            lines.append(f"{n}. {label}" + (f"  x{qty}" if qty > 1 else ""))
+            # "n)" not "n.": a chat app renders "13. x" as its own numbered
+            # list, and the message came out as "13. 13. x".
+            lines.append(f"{n}) {label}" + (f"  x{qty}" if qty > 1 else ""))
         if len(lines) == (1 if header else 0):
             lines.append("(nothing was added)")
         if self.dry_run:
@@ -1349,6 +1387,14 @@ class DesktopActuator:
         except Exception:
             return False
         if el is None:
+            return True
+        if el.control is None:
+            # Found by OCR: the pixels ARE what is on top, so there is
+            # nothing to be covered by. And the containment test below
+            # cannot apply - the control under a label (a tab, a button) is
+            # always bigger than the label's text box, so it failed every
+            # pixel-only element: clicking the AGI Agent window's own
+            # "Settings" tab silently did nothing.
             return True
         try:
             import uiautomation as auto

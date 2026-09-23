@@ -6,6 +6,13 @@
     "query": ""
   },
   "trust": "draft",
+  "listed": true,
+  "tags": [
+    "music",
+    "song",
+    "play",
+    "spotify"
+  ],
   "steps": [
     {
       "do": "open",

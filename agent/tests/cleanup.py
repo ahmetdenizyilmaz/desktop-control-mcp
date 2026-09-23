@@ -174,6 +174,7 @@ TEMP_PREFIXES = (
     "agent_sched2_", "agent_sched3_", "agent_induce_", "agent_p11_prof_",
     "agent_e2e_store_", "p12_", "p12store_", "lessons_test_", "clip_test_",
     "clip_bad_", "clip_seq_", "stop_test_", "agi_migrate_", "dl_test_",
+    "engine_test_",
 )
 
 #: mkdtemp appends exactly eight characters from [a-z0-9_]. Insisting on that

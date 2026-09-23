@@ -325,6 +325,10 @@ class Script:
     description: str = ""
     #: Where it came from, for the report. Never grants trust.
     origin: str = ""
+    #: Top-level keys this format does not interpret - `site`, `listed`,
+    #: `tags`, `source_task`, `cancel` - kept so that loading and saving a
+    #: script never silently drops what an app wrote into it.
+    extra: dict = field(default_factory=dict)
 
     def declared_params(self) -> set[str]:
         return set(self.params)
@@ -579,6 +583,10 @@ def _step(raw: Any, where: str) -> Step:
     return s
 
 
+#: The top-level keys `parse` reads itself. Anything else goes to `extra`.
+_TOP_KEYS = ("name", "version", "description", "params", "trust", "steps")
+
+
 def parse(raw: Any, origin: str = "") -> Script:
     """Turn JSON into a Script, or explain exactly why it cannot.
 
@@ -609,7 +617,8 @@ def parse(raw: Any, origin: str = "") -> Script:
         origin=origin,
         # Whatever the file claims, an import is a draft. Trust is local
         # knowledge and does not travel.
-        trust=IMPORT_TRUST)
+        trust=IMPORT_TRUST,
+        extra={k: v for k, v in raw.items() if k not in _TOP_KEYS})
     check_params(script)
     return script
 

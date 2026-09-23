@@ -2751,6 +2751,14 @@ class _ToolWorker:
         self._q.put((fn, args, box, done))
         return box, done
 
+    def call(self, fn, *a):
+        """Run a plain (sync) function on this thread. For the script
+        engine, whose runner drives UI Automation and so must run where
+        every tool runs - see the class docstring."""
+        async def _job(_):
+            return fn(*a)
+        return self.submit(_job, None)
+
 
 _worker = _ToolWorker()
 

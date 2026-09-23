@@ -62,11 +62,24 @@ HIDDEN = [
     "comtypes",
     "comtypes.stream",
     "uiautomation",
+    # The script engine (pipeline/, found through --paths below). The app
+    # imports it lazily - only when a task is routed - so static analysis
+    # sees none of it.
+    "script", "script.runner", "script.library", "script.schema",
+    "script.resolve", "script.choose", "script.helper", "script.guard",
+    "vision", "vision.elements", "vision.capture", "vision.ocr",
+    "vision.query", "vision.templates", "cursor", "winocr", "numpy",
+    "core.engine", "core.keys", "core.pipeline_bridge",
 ]
+
+PIPELINE = REPO / "pipeline"
 
 DATA = [
     (HERE / "ui" / "app.html", "ui"),
     (ICON, "assets"),
+    # Shipped scripts. Copied into the data folder on first use and edited
+    # there (core/pipeline_bridge.py) - the bundle itself is a temp dir.
+    (PIPELINE / "script" / "scripts", "pipeline/script/scripts"),
 ]
 
 
@@ -107,6 +120,7 @@ def build(clean: bool = False) -> int:
         "--workpath", str(WORK),
         "--specpath", str(WORK),
         "--paths", str(HERE),
+        "--paths", str(PIPELINE),
     ]
     for mod in EXCLUDE:
         cmd += ["--exclude-module", mod]

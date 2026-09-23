@@ -1167,6 +1167,131 @@ try:
 except Exception as exc:
     check("the shipped Migros scripts parse", False, f"{type(exc).__name__}: {exc}")
 
+
+# --------------------------------------------------------------------------
+print("\nthe app's engine hooks — trust, rescue, the list, the library")
+# --------------------------------------------------------------------------
+
+# -- honour_trust: "Supervised" asks even a trusted script -----------------
+wt = FakeWatcher(scene(el("button", "Öde", 10, 10)))
+
+
+def trusted_run(**kw):
+    sc = parse({"name": "t", "steps": [{"do": "click", "target": "Öde"}]})
+    sc.trust = Trust.TRUSTED
+    rv = lib_mod.Resolved(entry=sc, scripts={"t": sc}, trust=Trust.TRUSTED)
+    act = FakeActuator()
+    asked_ = []
+    Runner(rv, wt, act,
+           confirm=lambda word, e: (asked_.append(word), True)[1], **kw).run()
+    return act, asked_
+
+
+act_, asked_ = trusted_run()
+check("by default a TRUSTED script commits without asking",
+      act_.log == ["click:Öde"] and asked_ == [], f"{act_.log} {asked_}")
+act_, asked_ = trusted_run(honour_trust=False)
+check("honour_trust=False (Supervised) asks even a trusted script",
+      act_.log == ["click:Öde"] and asked_ == ["öde"], f"{act_.log} {asked_}")
+
+
+# -- rescue_tries: a second try is told what the first did -----------------
+class FakeHelper:
+    name = "fake"
+
+    def __init__(self, plans):
+        self.plans = list(plans)
+        self.budget = 10
+        self.calls: list[dict] = []
+
+    def rescue(self, goal, error, scene, history=None):
+        self.calls.append({"goal": goal, "history": list(history or [])})
+        self.budget -= 1
+        return self.plans.pop(0) if self.plans else {"steps": []}
+
+    def parse(self, plan, where):
+        from script.schema import _step
+        return [_step(s, where) for s in plan.get("steps") or []]
+
+
+wr = FakeWatcher(scene(el("button", "OK", 10, 10)))
+ar = FakeActuator()
+hp = FakeHelper([{"why": "nothing obvious", "steps": []},
+                 {"why": "the button is OK", "steps": [
+                     {"do": "click", "target": {"text": "OK",
+                                                "match": "exact"}}]}])
+rep = run_script({"name": "t", "steps": [
+    {"do": "click", "target": {"text": "Missing", "match": "exact"}}]},
+    wr, ar, helper=hp, rescue_tries=2).run()
+check("rescue_tries=2 asks the helper twice when the first try fails",
+      len(hp.calls) == 2 and rep.ok and ar.log == ["click:OK"],
+      f"{len(hp.calls)} calls, ok={rep.ok}, {ar.log}")
+check("the second try is told what the first one did",
+      hp.calls[1]["history"] and "try 1" in hp.calls[1]["history"][0],
+      str(hp.calls[1]["history"] if len(hp.calls) > 1 else "no 2nd call"))
+
+hp1 = FakeHelper([{"steps": []}, {"steps": []}])
+rep = run_script({"name": "t", "steps": [
+    {"do": "click", "target": {"text": "Missing", "match": "exact"}}]},
+    FakeWatcher(scene(el("button", "OK", 10, 10))), FakeActuator(),
+    helper=hp1).run()
+check("the default is still ONE rescue try per step",
+      len(hp1.calls) == 1 and not rep.ok, f"{len(hp1.calls)} calls")
+
+# -- the chat list: "n)" not "n." ------------------------------------------
+wl = FakeWatcher(scene(el("edit", "Type a message", 10, 10)))
+al = FakeActuator()
+rn = run_script({"name": "t", "steps": [
+    {"do": "type", "into": {"text": "Type a message", "kind": "edit"},
+     "value": "List:", "lines_from": "picks"}]}, wl, al)
+rn.report.bought = {"Süt 1 L": 1, "Ekmek": 3}
+rn.run()
+typed = [x for x in al.log if x.startswith("type:")]
+check("a bought list numbers lines as '1)' - a chat renders '1.' twice",
+      any(x.startswith("type:1) Süt 1 L") for x in typed)
+      and any(x.startswith("type:2) Ekmek  x3") for x in typed),
+      str(typed))
+
+# -- a tolerant library ----------------------------------------------------
+tl = Path(tempfile.mkdtemp(prefix="tolerant-"))
+(tl / "good.json").write_text(json.dumps(
+    {"name": "good", "steps": [{"do": "wait", "seconds": 0}]}),
+    encoding="utf-8")
+(tl / "bad.json").write_text("{ not json", encoding="utf-8")
+(tl / "dup.json").write_text(json.dumps(
+    {"name": "good", "steps": [{"do": "wait", "seconds": 0}]}),
+    encoding="utf-8")
+raises("a strict library still refuses a bad file",
+       lambda: Library(roots=[tl], cache=cache).local(), "")
+soft = Library(roots=[tl], cache=cache, strict=False)
+check("a tolerant library skips a bad file and a duplicate, and says so",
+      set(soft.local()) == {"good"} and len(soft.errors) == 2,
+      f"{sorted(soft.local())} errors={soft.errors}")
+
+# -- extra keys survive, delete goes to the trash --------------------------
+xs = parse({"name": "site/x", "listed": False, "tags": ["a", "b"],
+            "cancel": {"window": "WhatsApp", "words": ["cancel"]},
+            "steps": [{"do": "wait", "seconds": 0}]})
+out = lib_mod.to_json(xs)
+check("keys the format does not read are kept through a save",
+      out.get("listed") is False and out.get("tags") == ["a", "b"]
+      and out.get("cancel", {}).get("window") == "WhatsApp"
+      and list(out)[-1] == "steps",
+      str(out))
+
+dl = Path(tempfile.mkdtemp(prefix="deleting-"))
+dlib = Library(roots=[dl], cache=cache, strict=False)
+dlib.save(parse({"name": "site/gone", "steps": [{"do": "wait",
+                                                  "seconds": 0}]}))
+check("path_of finds the file a script came from",
+      dlib.path_of("site/gone") is not None
+      and dlib.path_of("site/gone").exists())
+dest = dlib.delete("site/gone")
+check("delete moves the file to .trash, and the library forgets it",
+      dest.exists() and ".trash" in dest.parts
+      and "site/gone" not in dlib.local(),
+      f"{dest} {sorted(dlib.local())}")
+
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)
 total = len(results)

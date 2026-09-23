@@ -103,7 +103,7 @@ def _untruncate(label: str, texts: list[Element]) -> str:
     return max(fuller, key=len) if fuller else label
 
 
-def jev_chooser(backend: str = "openrouter") -> Chooser:
+def jev_chooser(backend: str = "openrouter", client=None) -> Chooser:
     """A chooser backed by the System-1 model. Built lazily, shared.
 
     Refuses rather than guessing when there is no key: the offline stub
@@ -112,6 +112,12 @@ def jev_chooser(backend: str = "openrouter") -> Chooser:
     dressed as a considered one.
     """
     state: dict = {}
+    if client is not None:
+        # Built by the caller - the app, from keys in its vault - rather
+        # than from environment variables. An offline one is refused at
+        # the first choice, below, exactly like a missing env key.
+        from core import jev as _jev
+        state["client"], state["jev"] = client, _jev
 
     def choose(goal: str, reject: str, options: dict[str, str]
                ) -> tuple[str, float]:
@@ -131,6 +137,10 @@ def jev_chooser(backend: str = "openrouter") -> Chooser:
                     f"a made-up ranking")
             state["client"], state["jev"] = client, jev
         jev = state["jev"]
+        if client.offline:
+            raise NoChoice(f"the {client.backend} decision model has no key "
+                           f"- refusing rather than returning a made-up "
+                           f"ranking")
 
         want = goal
         if reject:

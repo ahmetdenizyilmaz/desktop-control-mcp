@@ -21,6 +21,7 @@ many a run may spend.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -53,14 +54,25 @@ class OpusHelper:
     name = "opus"
 
     def __init__(self, model: str = "opus", budget: int = 12,
-                 timeout: float = 150.0, log=print) -> None:
+                 timeout: float = 150.0, log=print,
+                 stuck_dir: "Path | str | None" = None,
+                 env: dict | None = None,
+                 claude_path: str | None = None) -> None:
         self.model = model
         self.budget = budget
         self.timeout = timeout
         self.log = log
         self.calls = 0
-        self.claude = shutil.which("claude")
-        STUCK.mkdir(exist_ok=True)
+        self.claude = claude_path or shutil.which("claude")
+        #: Where stuck screenshots go. The app points this at its data
+        #: folder: in a packaged build `__file__` is a temp dir deleted on
+        #: exit.
+        self.stuck = Path(stuck_dir) if stuck_dir else STUCK
+        self.stuck.mkdir(parents=True, exist_ok=True)
+        #: Extra environment for the CLI - the app's provider settings.
+        self.env = dict(env or {})
+        #: The last screenshot sent, for a takeover prompt to point at.
+        self.last_shot: "Path | None" = None
 
     def _screenshot(self) -> Path | None:
         try:
@@ -73,7 +85,7 @@ class OpusHelper:
             im = im.convert("RGB")
             # Half size: plenty to read a page, a quarter of the tokens.
             im = im.resize((im.width // 2, im.height // 2))
-            path = STUCK / f"stuck-{time.strftime('%H%M%S')}-{self.calls}.png"
+            path = self.stuck / f"stuck-{time.strftime('%H%M%S')}-{self.calls}.png"
             im.save(path)
             return path
         except Exception:
@@ -86,6 +98,7 @@ class OpusHelper:
         self.budget -= 1
         self.calls += 1
         shot = self._screenshot()
+        self.last_shot = shot
         parts = [
             "You are rescuing a desktop automation script on Windows. "
             "Look at the screenshot, then answer.",
@@ -108,10 +121,11 @@ class OpusHelper:
             proc = subprocess.run(
                 [self.claude, "-p", "--model", self.model,
                  "--output-format", "json", "--allowedTools", "Read",
-                 "--add-dir", str(STUCK)],
+                 "--add-dir", str(self.stuck)],
                 input=prompt, capture_output=True, text=True,
                 encoding="utf-8", timeout=self.timeout,
-                cwd=str(STUCK.parent), creationflags=0x08000000)
+                cwd=str(self.stuck.parent), creationflags=0x08000000,
+                env=({**os.environ, **self.env} if self.env else None))
             outer = json.loads(proc.stdout or "{}")
             text = outer.get("result", "") or ""
         except Exception as exc:

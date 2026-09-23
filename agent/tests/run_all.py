@@ -40,6 +40,7 @@ SUITES = [
     ("test_browser", "browser control", False),
     ("test_phase11", "indexed page, batched actions, remembered selectors", False),
     ("test_phase12", "recording the browser, and replaying it", False),
+    ("test_engine", "script engine — Jev first, Claude second, you third", False),
     ("test_endtoend", "drive a real application", True),
 ]
 

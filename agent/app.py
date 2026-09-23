@@ -95,6 +95,19 @@ DEFAULTS = {
     "stall_minutes": 10,
     "browser_headless": True,
     "max_turns": 0,                     # 0 = no cap; a long task is not a stuck one
+    # -- the script engine: Jev first, Claude second, the person third ----
+    # Before any Claude turn, Jev checks the saved scripts for one that does
+    # this task (core/engine.py). Off = every task goes straight to Claude.
+    "scripts_first": True,
+    # Which service answers Jev's decisions. Its key lives in the vault;
+    # openrouter shares the key the Claude-via-OpenRouter option uses.
+    "jev_backend": "openrouter",
+    # How sure Jev must be that a saved script IS the task before running it.
+    "jev_min_confidence": 0.6,
+    # A stuck script step goes to Claude (with a screenshot) this many times
+    # before the full Claude agent takes the rest of the task over.
+    "rescue_tries": 2,
+    "rescue_model": "opus",
 }
 
 
@@ -345,7 +358,7 @@ _TOUCH_TOOLS = {
     "click", "type_text", "press_key", "do_steps", "mouse_path",
     "focus_window", "open_app", "screenshot", "find_controls", "read_labels",
     "list_windows", "sample_colors", "trace_edges", "copy_to_clipboard",
-    "use_credential", "record_job",
+    "use_credential", "record_job", "script",
 }
 #: Tools that wait on a person. ORANGE.
 _WAIT_TOOLS = {"ask_user", "wait_for_reply"}
@@ -466,6 +479,10 @@ class Agent:
         # question popup. Both created lazily so a headless import is cheap.
         self._border = None
         self._popup = None
+        #: What the script engine is doing, for the window (core/engine.py).
+        self._engine_status: dict = {"state": "idle"}
+        #: Last result of each Settings "Test" button, shown until retested.
+        self._key_tests: dict = {}
 
     # -- feed ------------------------------------------------------------
     def _say(self, kind: str, text: str, **extra) -> None:
@@ -704,7 +721,10 @@ class Agent:
             "usage": self._usage_view(),
             "model": self._last_model or self.settings.get("model") or "",
             "keys": {"gemini": _has_secret(GEMINI_KEY),
-                     "openrouter": _has_secret(OPENROUTER_KEY)},
+                     "openrouter": _has_secret(OPENROUTER_KEY),
+                     "jev": self._jev_has_key()},
+            "key_tests": self._key_tests,
+            "engine": self._engine_status,
             "proxy": (proxy.status(_endpoint_url(self.settings))
                       if _endpoint_url(self.settings) else None),
         }
@@ -1033,6 +1053,39 @@ class Agent:
             detail = "The app will start the proxy with this key when a task needs it."
         return {"ok": True, "saved": bool(key), "detail": detail}
 
+    # -- the script engine's keys ----------------------------------------
+    def _jev_has_key(self) -> bool:
+        try:
+            from core import keys
+            return keys.has_jev_key(self.settings)
+        except Exception:
+            return False
+
+    def save_jev_key(self, backend: str, key: str, account: str = "") -> dict:
+        """Store Jev's key in the vault. Never in settings.json."""
+        from core import keys
+        backend = backend or self.settings.get("jev_backend") or "openrouter"
+        try:
+            r = keys.save_jev_key(backend, key, account)
+        except VaultError as e:
+            return {"ok": False, "error": str(e)}
+        if r.get("ok"):
+            self.update_settings({"jev_backend": backend})
+            self._key_tests.pop("jev", None)
+        return r
+
+    def test_jev(self) -> dict:
+        from core import keys
+        r = keys.test_jev(self.settings)
+        self._key_tests["jev"] = r
+        return r
+
+    def test_claude(self) -> dict:
+        from core import keys
+        r = keys.test_claude(self.settings)
+        self._key_tests["claude"] = r
+        return r
+
     def provider_status(self) -> dict:
         have = False
         try:
@@ -1210,16 +1263,6 @@ class Agent:
         watchdog.start()
         watchdog.begin(self._task_id, task[:60])
 
-        # A custom endpoint on this machine is usually LiteLLM, and it may not
-        # be up yet. Start it here, with the vault's provider keys, rather than
-        # let the CLI die on "connection refused" forty seconds in.
-        r = self._ensure_proxy()
-        if r is not None and not r["ok"]:
-            self._say("error", f"The local endpoint is not answering: {r['detail']}")
-            watchdog.finish(self._task_id, ok=False)
-            self.running = False
-            return
-
         self.arbiter = Arbiter(owner=APP_TITLE)
         if not self.arbiter.start():
             self._say("error", f"Could not take control: {self.arbiter.state.detail}")
@@ -1232,7 +1275,20 @@ class Agent:
         self._say("system", f"Working on: {task}")
         self._refresh_border()          # blue: running, thinking
         try:
-            asyncio.run(self._drive(task))
+            outcome = self._route(task)
+            if outcome is not None and outcome.kind in ("done", "stopped"):
+                return                  # the script engine finished it
+            # A custom endpoint on this machine is usually LiteLLM, and it
+            # may not be up yet. Started only now - a task a saved script
+            # handled never needed it - and with the vault's provider keys,
+            # rather than let the CLI die on "connection refused".
+            r = self._ensure_proxy()
+            if r is not None and not r["ok"]:
+                self._say("error", f"The local endpoint is not answering: "
+                                   f"{r['detail']}")
+                return
+            prompt = outcome.prompt if outcome is not None else ""
+            asyncio.run(self._drive(task, prompt=prompt))
         except asyncio.CancelledError:
             # Not ours (ours is absorbed in _consume). Still end the run in
             # order rather than killing the thread with a traceback.
@@ -1249,6 +1305,7 @@ class Agent:
                 self._say("error", f"{type(e).__name__}: {e}")
         finally:
             watchdog.finish(self._task_id, ok=True)
+            self._engine_status = {"state": "idle"}
             if self.arbiter:
                 self.arbiter.stop()
             tools_sdk.set_arbiter(None)
@@ -1264,6 +1321,32 @@ class Agent:
             spent = _usage_line(self._usage)
             self._say("system", took + (f"  {spent}." if spent else ""))
             self._come_to_front()
+
+    def _route(self, task: str):
+        """Jev first: run a saved script if one fits. None = go to Claude.
+
+        Never lets the engine take a task down with it - any failure in the
+        engine itself hands the task to Claude, which is where it would
+        have gone without the engine at all.
+        """
+        if not self.settings.get("scripts_first", True):
+            return None
+        try:
+            from core.engine import ScriptEngine
+            eng = ScriptEngine(
+                self.settings, self._say,
+                set_status=lambda st: setattr(self, "_engine_status",
+                                              st.as_dict()),
+                set_current=self._set_current_tool)
+            return eng.handle(task)
+        except Exception as e:
+            self._say("system", f"Script engine error ({type(e).__name__}: "
+                                f"{e}) — handing the task to Claude.")
+            return None
+
+    def _set_current_tool(self, cur: dict | None) -> None:
+        self._current = cur
+        self._refresh_border()
 
     def _come_to_front(self) -> None:
         """Raise the app window when the work is done.
@@ -1287,7 +1370,7 @@ class Agent:
         except Exception:
             pass
 
-    async def _drive(self, task: str) -> None:
+    async def _drive(self, task: str, prompt: str = "") -> None:
         # Work in a scratch directory, never in the app's own source tree.
         workspace = paths.data("workspace")
         workspace.mkdir(parents=True, exist_ok=True)
@@ -1359,6 +1442,11 @@ class Agent:
         # model before it plans — the "check later easily" half of task memory.
         # Recalled lessons arrive with the task instead of costing a lookup
         # turn. Never let a lessons failure break the task itself.
+        if prompt:
+            # A takeover from a stuck script: the prompt already says what
+            # was done and what is left. Lessons would only dilute it.
+            await self._consume(query(prompt=prompt, options=opts))
+            return
         prompt = task
         try:
             from core import lessons

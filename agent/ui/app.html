@@ -234,6 +234,37 @@ input::placeholder{color:var(--ink3)}
   <!-- SETTINGS -->
   <div class="pane" id="pane-settings">
     <div class="body-pad">
+      <h2>Engines</h2>
+      <p class="hint" style="margin:0 0 10px">Tried in this order:
+        <b>1 · Jev + saved scripts</b> (fast, cheap) →
+        <b>2 · Claude</b> (fixes a stuck step, or takes the task over) →
+        <b>3 · asks you</b>.</p>
+      <div class="toggle">
+        <input type="checkbox" id="eng-first">
+        <label for="eng-first">Try saved scripts with Jev before asking Claude</label>
+      </div>
+      <label class="field">
+        <span>Jev service <b id="jev-state" style="font-weight:400;opacity:.65"></b></span>
+        <select id="jev-backend">
+          <option value="openrouter">OpenRouter (shares the OpenRouter key)</option>
+          <option value="typesafe">TypeSafe</option>
+          <option value="cloudflare">Cloudflare Workers AI</option>
+        </select>
+      </label>
+      <div class="crow" style="margin:-4px 0 6px">
+        <input id="jev-key" type="password" placeholder="Jev key" style="flex:1">
+        <input id="jev-acct" placeholder="Cloudflare account id" style="flex:1" hidden>
+        <button id="jev-save">Save key</button>
+        <button id="jev-test">Test</button>
+      </div>
+      <p class="hint" style="margin:0 0 12px" id="jev-msg"></p>
+      <div class="crow" style="margin:0 0 6px;align-items:center">
+        <span style="flex:1">Claude — rescues stuck steps and takes over
+          <b id="claude-state" style="font-weight:400;opacity:.65"></b></span>
+        <button id="claude-test">Test Claude</button>
+      </div>
+      <p class="hint" style="margin:0 0 16px" id="claude-msg"></p>
+
       <h2>Automation</h2>
       <label class="field">
         <span>How much should it ask before acting?</span>
@@ -400,9 +431,13 @@ function render(state) {
     bar.hidden = false;
     bar.className = "nowbar" + (state.paused ? " held" : "");
     const c = state.current;
+    const eng = state.engine || {};
     document.getElementById("nowtool").textContent =
       state.paused ? "Paused — nothing is being touched"
+      : c && c.tool === "script" ? `script ${eng.script || c.detail}`
+          + (eng.detail ? ` · ${eng.detail}` : "")
       : c ? `${c.tool}(${c.detail})`
+      : eng.state === "routing" ? "Jev: checking saved scripts…"
       : "thinking…";
     const secs = c && !state.paused
       ? Math.round(Date.now()/1000 - c.since) : 0;
@@ -566,6 +601,7 @@ function render(state) {
   }
   // Key presence and proxy state are shown, never the key itself.
   const keys = state.keys || {};
+  renderEngines(state, keys);
   document.getElementById("gm-key").placeholder = keys.gemini
     ? "Gemini key saved — paste a new one to replace it" : "Gemini API key (AIza…)";
   const px = state.proxy;
@@ -681,6 +717,62 @@ document.getElementById("set-provider").addEventListener("change", e => {
   e.target.dataset.touched = 1;
   fillModels(e.target.value, "", "");
 });
+// -- engines: Jev + Claude ---------------------------------------------------
+const jevHint = {openrouter: "OpenRouter key (sk-or-…) — same key as the OpenRouter provider",
+                 typesafe: "TypeSafe API key", cloudflare: "Cloudflare API token"};
+function testLine(t, what) {
+  if (!t) return "";
+  if (!t.ok) return `✗ ${what} test failed: ${t.error || "wrong answer"}`;
+  return what === "Jev"
+    ? `✓ working · ${t.latency_ms} ms · chose "${t.choice}" (margin ${t.margin}) · ${t.model}`
+    : `✓ working · ${t.model} · ${(t.latency_ms/1000).toFixed(1)} s`
+      + (t.cost_usd ? ` · $${t.cost_usd.toFixed(3)}` : "");
+}
+function renderEngines(state, keys) {
+  const s = state.settings || {};
+  const be = document.getElementById("jev-backend");
+  if (document.activeElement !== be) be.value = s.jev_backend || "openrouter";
+  const first = document.getElementById("eng-first");
+  if (document.activeElement !== first) first.checked = s.scripts_first !== false;
+  document.getElementById("jev-acct").hidden = be.value !== "cloudflare";
+  const kf = document.getElementById("jev-key");
+  kf.placeholder = keys.jev ? "Key saved — paste a new one to replace it"
+                            : jevHint[be.value] || "Jev key";
+  document.getElementById("jev-state").textContent =
+    keys.jev ? "· key saved" : "· no key — saved scripts will be skipped";
+  const kt = state.key_tests || {};
+  const jm = document.getElementById("jev-msg");
+  if (!jm.dataset.busy) jm.textContent = testLine(kt.jev, "Jev");
+  const cm = document.getElementById("claude-msg");
+  if (!cm.dataset.busy) cm.textContent = testLine(kt.claude, "Claude");
+}
+document.getElementById("eng-first").addEventListener("change", async e => {
+  await api().update_settings({scripts_first: e.target.checked}); poll();
+});
+document.getElementById("jev-backend").addEventListener("change", async e => {
+  await api().update_settings({jev_backend: e.target.value}); poll();
+});
+document.getElementById("jev-save").onclick = async () => {
+  const el = document.getElementById("jev-key");
+  const acct = document.getElementById("jev-acct").value;
+  const be = document.getElementById("jev-backend").value;
+  const r = await api().save_jev_key(be, el.value, acct);
+  document.getElementById("jev-msg").textContent = r.ok
+    ? (r.saved ? "Key saved (encrypted). Press Test to check it." : "Key cleared.")
+    : ("Could not save: " + r.error);
+  el.value = ""; poll();
+};
+async function runTest(btn, msgId, call, busyText) {
+  const m = document.getElementById(msgId), b = document.getElementById(btn);
+  m.dataset.busy = 1; m.textContent = busyText; b.disabled = true;
+  try { await call(); } finally { delete m.dataset.busy; b.disabled = false; poll(); }
+}
+document.getElementById("jev-test").onclick = () =>
+  runTest("jev-test", "jev-msg", () => api().test_jev(), "Asking Jev one question…");
+document.getElementById("claude-test").onclick = () =>
+  runTest("claude-test", "claude-msg", () => api().test_claude(),
+          "Asking Claude to reply OK (can take ~10–30 s)…");
+
 document.getElementById("or-save").onclick = async () => {
   const el = document.getElementById("or-key");
   const r = await api().save_openrouter_key(el.value);

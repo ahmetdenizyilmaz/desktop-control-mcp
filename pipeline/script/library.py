@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -119,7 +120,8 @@ class Library:
     def __init__(self, roots: list[Path | str] | None = None,
                  cache: Path | str = CACHE,
                  allow_fetch: bool = False,
-                 allow_hosts: tuple[str, ...] = ()) -> None:
+                 allow_hosts: tuple[str, ...] = (),
+                 strict: bool = True) -> None:
         self.roots = [Path(r) for r in (roots or [SCRIPTS])]
         for r in self.roots:
             r.mkdir(parents=True, exist_ok=True)
@@ -128,6 +130,13 @@ class Library:
         self.allow_fetch = allow_fetch
         self.allow_hosts = tuple(h.lower() for h in allow_hosts)
         self._local: dict[str, Script] | None = None
+        #: strict=False: one unreadable or duplicate file is reported here
+        #: and skipped, instead of making every other script unreachable. An
+        #: app that saves scripts Claude wrote needs that - a single bad
+        #: generated file must not stop recognition for the whole library.
+        self.strict = strict
+        self.errors: list[str] = []
+        self._paths: dict[str, Path] = {}
 
     # -- local -------------------------------------------------------------
 
@@ -140,23 +149,56 @@ class Library:
         """
         found: dict[str, Script] = {}
         where: dict[str, Path] = {}
+        self.errors = []
         for root in self.roots:
             for path in sorted(root.rglob("*.json")):
+                # Deleted scripts and old versions live beside the library,
+                # not in it.
+                rel = path.relative_to(root).parts
+                if rel and rel[0] in (".trash", ".history"):
+                    continue
                 try:
-                    raw = json.loads(path.read_text(encoding="utf-8"))
-                except Exception as exc:
-                    raise ScriptError(f"{path}: not readable JSON — {exc}")
-                script = parse(raw, origin=str(path))
-                # A local file is not an import; it is as trusted as its
-                # own record says.
-                script.trust = _declared_trust(raw)
-                if script.name in found:
-                    raise ScriptError(
-                        f"two scripts both named {script.name!r}: "
-                        f"{where[script.name]} and {path}")
+                    try:
+                        raw = json.loads(path.read_text(encoding="utf-8"))
+                    except Exception as exc:
+                        raise ScriptError(f"{path}: not readable JSON — {exc}")
+                    script = parse(raw, origin=str(path))
+                    # A local file is not an import; it is as trusted as its
+                    # own record says.
+                    script.trust = _declared_trust(raw)
+                    if script.name in found:
+                        raise ScriptError(
+                            f"two scripts both named {script.name!r}: "
+                            f"{where[script.name]} and {path}")
+                except ScriptError as exc:
+                    if self.strict:
+                        raise
+                    self.errors.append(str(exc))
+                    continue
                 found[script.name] = script
                 where[script.name] = path
+        self._paths = where
         return found
+
+    def path_of(self, name: str) -> Path | None:
+        """The file a local script was loaded from."""
+        self.local()
+        return self._paths.get(name)
+
+    def delete(self, name: str) -> Path:
+        """Move a script to `.trash/` beside the library. Never unlinks:
+        a script someone spent a run teaching is not deleted by one click."""
+        path = self.path_of(name)
+        if path is None:
+            raise ScriptError(f"no local script named {name!r}")
+        root = next(r for r in self.roots
+                    if r in path.parents or r == path.parent)
+        dest = root / ".trash" / f"{time.strftime('%Y%m%d-%H%M%S')}-" \
+            f"{path.relative_to(root).as_posix().replace('/', '__')}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        path.replace(dest)
+        self.reload()
+        return dest
 
     def local(self) -> dict[str, Script]:
         if self._local is None:
@@ -486,5 +528,8 @@ def to_json(script: Script) -> dict:
     if script.params:
         out["params"] = dict(script.params)
     out["trust"] = script.trust.value
+    for k, v in (script.extra or {}).items():
+        if k not in out and k != "steps":
+            out[k] = v
     out["steps"] = [step_json(s) for s in script.steps]
     return out
