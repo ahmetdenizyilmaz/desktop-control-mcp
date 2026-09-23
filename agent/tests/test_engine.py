@@ -485,7 +485,7 @@ replies = []
 real_claude = authoring._claude
 
 
-def fake_claude(prompt, model, timeout, env):
+def fake_claude(prompt, model, timeout, env, **kw):
     return replies.pop(0)
 
 
@@ -691,6 +691,8 @@ check("a part with no reported cost says so, never '$0'",
       "cost not reported" in L2.summary(), L2.summary())
 
 ledger_mod.current = ledger_mod.Ledger("t")
+from core import claude_api as _capi                        # noqa: E402
+_capi.mode = "cli"            # this part is about the CLI path
 import subprocess as _sp                                     # noqa: E402
 _real_run = _sp.run
 
@@ -892,6 +894,144 @@ check("the question and its answer are both recorded",
 check("a summary is written at the end",
       "Cost: $0.0004" in (lg.dir / "summary.txt").read_text(encoding="utf-8"))
 _v.delete("log-test-secret")
+
+# --------------------------------------------------------------------------
+print("\nClaude straight over the API, the CLI only as the fallback")
+# --------------------------------------------------------------------------
+from core import claude_api                                  # noqa: E402
+import types as _types                                       # noqa: E402
+
+check("'opus' is Opus 5.5 on the Anthropic API",
+      claude_api.model_id("opus", "anthropic") == "claude-opus-5-5")
+check("... and the same model under OpenRouter's name",
+      claude_api.model_id("opus", "openrouter") == "anthropic/claude-opus-5.5"
+      and claude_api.model_id("claude-haiku-4-5", "openrouter")
+      == "anthropic/claude-haiku-4.5"
+      and claude_api.model_id("claude-sonnet-5", "openrouter")
+      == "anthropic/claude-sonnet-5")
+check("an OpenRouter id given with an Anthropic key is translated back",
+      claude_api.model_id("anthropic/claude-opus-5.5", "anthropic")
+      == "claude-opus-5-5")
+_u = _types.SimpleNamespace(input_tokens=1000, output_tokens=500,
+                            cache_read_input_tokens=10000,
+                            cache_creation_input_tokens=0)
+check("cost from tokens when the reply does not say: cache reads at 0.1x",
+      abs(claude_api.price("claude-opus-5-5", _u)
+          - (1000 * 4 + 10000 * 0.4 + 500 * 20) / 1e6) < 1e-12,
+      str(claude_api.price("claude-opus-5-5", _u)))
+
+claude_api.configure({"claude_transport": "cli"})
+check("'Claude login' in Settings turns direct calls off",
+      not claude_api.enabled())
+claude_api.configure({})
+_real_route = claude_api.route
+claude_api.route = lambda: None
+check("no key anywhere: direct calls are off even when chosen",
+      not claude_api.enabled())
+
+sent: list[dict] = []
+
+
+class _Msgs:
+    fail = False
+
+    def create(self, **req):
+        sent.append(req)
+        if _Msgs.fail:
+            raise RuntimeError("503 overloaded")
+        return _types.SimpleNamespace(
+            content=[_types.SimpleNamespace(type="text", text='{"choice": "1"}')],
+            usage=_types.SimpleNamespace(input_tokens=100, output_tokens=10,
+                                         cache_read_input_tokens=0,
+                                         cache_creation_input_tokens=0,
+                                         cost=0.0007))
+
+
+class _FakeAnthropic:
+    def __init__(self, **kw):
+        _FakeAnthropic.kw = kw
+        self.messages = _Msgs()
+
+
+_fake_mod = _types.SimpleNamespace(Anthropic=_FakeAnthropic,
+                                   BadRequestError=type("BRE", (Exception,), {}))
+_real_mod = sys.modules.get("anthropic")
+sys.modules["anthropic"] = _fake_mod
+claude_api.route = lambda: ("openrouter", {"base_url": claude_api.OPENROUTER_BASE,
+                                           "auth_token": "k", "api_key": None})
+ledger_mod.current = ledger_mod.Ledger("t")
+authoring.subprocess.run = boom            # the CLI must not be touched
+try:
+    txt = authoring._claude("which one?", "opus", 30, None, kind="decide",
+                            system="THE GUIDE")
+    ok_direct = txt == '{"choice": "1"}'
+except Exception as e:
+    ok_direct = False
+    txt = repr(e)
+authoring.subprocess.run = _real_run
+check("with a key, a Claude call goes straight to the API - no CLI",
+      ok_direct, txt)
+req = sent[-1] if sent else {}
+check("the direct call asks the model the user chose, by OpenRouter's name",
+      req.get("model") == "anthropic/claude-opus-5.5", str(req.get("model")))
+check("the fixed guide is sent once as a cached system block",
+      req.get("system", [{}])[0].get("text") == "THE GUIDE"
+      and req["system"][0].get("cache_control") == {"type": "ephemeral"}
+      and "THE GUIDE" not in req["messages"][0]["content"][-1]["text"])
+check("a decision is asked at low effort (a lookup, not a puzzle)",
+      req.get("output_config") == {"effort": "low"})
+check("its reported cost lands on the task's bill",
+      abs(ledger_mod.current.totals().get("decide", {}).get("cost", 0)
+          - 0.0007) < 1e-12, str(ledger_mod.current.totals()))
+
+_shot = Path(_TMP) / "stuck-test.png"
+_shot.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+got = claude_api.call("rescue me", "opus", images=[_shot], kind="rescue",
+                      record=False)
+blocks = sent[-1]["messages"][0]["content"]
+check("a rescue sends the screenshot inline as an image block",
+      blocks[0].get("type") == "image"
+      and blocks[0]["source"]["media_type"] == "image/png"
+      and blocks[-1]["text"] == "rescue me"
+      and sent[-1]["output_config"] == {"effort": "medium"}, str(blocks[0])[:120])
+
+_Msgs.fail = True
+authoring.subprocess.run = lambda *a, **k: _P()
+fell = authoring._claude("hi", "opus", 10, None, kind="write")
+authoring.subprocess.run = _real_run
+check("a failed direct call falls back to the CLI, and the task goes on",
+      fell == "ok" and "overloaded" in claude_api.last_error,
+      claude_api.last_error)
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pipeline"))
+from script.helper import OpusHelper                         # noqa: E402
+h = OpusHelper(stuck_dir=Path(_TMP) / "stuck", log=lambda m: None,
+               claude_path="")
+h.claude = None                          # no CLI on this "machine"
+h._screenshot = lambda: _shot
+billed = []
+h.on_cost = lambda s, c: billed.append(c)
+asked = []
+h.caller = lambda prompt, shot: (asked.append((prompt, shot))
+                                 or ('{"done": true, "why": "ok", "steps": []}',
+                                     0.02))
+plan = h.rescue("add milk", "button gone", ["button, Add, (1,1), "])
+check("the rescue helper uses the direct caller, needing no CLI",
+      plan.get("done") is True and asked and asked[0][1] == _shot
+      and billed == [0.02], str(plan))
+check("... and does not tell the model to go read a file",
+      "read the file" not in asked[0][0] and "attached" in asked[0][0])
+h.caller = lambda prompt, shot: None
+plan = h.rescue("add milk", "button gone", [])
+check("a direct call that fails with no CLI to fall back to: no steps, no crash",
+      plan.get("steps") == [] and not plan.get("done"), str(plan))
+
+_Msgs.fail = False
+if _real_mod is not None:
+    sys.modules["anthropic"] = _real_mod
+else:
+    sys.modules.pop("anthropic", None)
+claude_api.route = _real_route
 
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)

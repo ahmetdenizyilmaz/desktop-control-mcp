@@ -71,7 +71,9 @@ HIDDEN = [
     "vision.query", "vision.templates", "cursor", "winocr", "numpy",
     "core.engine", "core.keys", "core.pipeline_bridge", "core.progress",
     "core.waiting", "core.cancel_watch", "core.authoring", "core.ledger",
-    "core.checkpoint", "core.quick",
+    "core.checkpoint", "core.quick", "core.tasklog", "core.claude_api",
+    # Direct Claude calls (core/claude_api) - imported inside a function.
+    "anthropic",
 ]
 
 PIPELINE = REPO / "pipeline"

@@ -136,6 +136,21 @@ def test_claude(settings: dict, env: dict | None = None) -> dict:
             "cost_usd": out.get("total_cost_usd"), "at": time.time()}
 
 
+def test_claude_api(model: str = "opus") -> dict:
+    """One direct API call (no CLI): does the key work on this model?"""
+    from . import claude_api
+    r = claude_api.route()
+    if r is None:
+        return {"ok": False, "error": "no Anthropic or OpenRouter key saved"}
+    got = claude_api.call("Reply with exactly: OK", model, max_tokens=200,
+                          timeout=60, kind="decide", record=False)
+    if got is None:
+        return {"ok": False, "route": r[0], "error": claude_api.last_error}
+    return {"ok": "OK" in got.text, "model": got.model, "route": got.route,
+            "latency_ms": int(got.seconds * 1000), "cost_usd": got.cost,
+            "at": time.time()}
+
+
 def _get_json(url: str, headers: dict, timeout: float = 15.0) -> dict:
     import urllib.request
     req = urllib.request.Request(url, headers={"User-Agent": "AGIAgent",

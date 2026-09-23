@@ -90,9 +90,19 @@ RULES
 
 
 def _claude(prompt: str, model: str, timeout: float, env: dict | None,
-            kind: str = "write") -> str:
-    """One Claude CLI call. Its time and reported cost go on the task's
-    ledger under `kind` (write, decide, details)."""
+            kind: str = "write", system: str = "") -> str:
+    """One Claude call: straight to the API when Settings say so and a key
+    is there (core/claude_api), otherwise the CLI. Its time and cost go on
+    the task's ledger under `kind` (write, decide, details). `system` is
+    the part that stays the same between calls - cached on the API."""
+    from . import claude_api
+    if claude_api.enabled():
+        got = claude_api.call(prompt, model, system=system, timeout=timeout,
+                              kind=kind)
+        if got is not None:
+            return got.text
+    if system:
+        prompt = system + "\n\n" + prompt
     exe = shutil.which("claude")
     if not exe:
         raise RuntimeError("Claude Code CLI not installed")
@@ -169,13 +179,15 @@ def author(task: str, lib, settings: dict, env: dict | None = None,
     global reused
     reused = False
 
+    # The guide goes first and alone, so the API can cache it: it is the
+    # bulk of the prompt and the same for every script Claude writes.
+    system = ("You write automation scripts for a Windows desktop agent. The "
+              "agent runs your script itself; it can drive any app and "
+              f"Chrome.\n{GUIDE}")
     base = (
-        "You write automation scripts for a Windows desktop agent. The agent runs "
-        "your script itself; it can drive any app and Chrome.\n\n"
         f"TASK FROM THE PERSON: {task}\n\n"
         f"APPS ON THIS MACHINE (for open.app): {_apps()}\n\n"
-        f"EXISTING SCRIPTS YOU MAY CALL:\n{catalogue(lib)}\n"
-        f"{GUIDE}\n"
+        f"EXISTING SCRIPTS YOU MAY CALL:\n{catalogue(lib)}\n\n"
         "Write ONE script that does this task, generalised with params where the "
         "person named a specific thing (a song, a product, a message, a person). "
         "Reply with ONLY: {\"script\": <the script object>}. If an EXISTING "
@@ -187,7 +199,7 @@ def author(task: str, lib, settings: dict, env: dict | None = None,
     model = settings.get("author_model") or "opus"
     for attempt in range(2):
         try:
-            text = _claude(prompt, model, 300, env)
+            text = _claude(prompt, model, 300, env, system=system)
         except Exception as e:
             return None, f"Claude could not write a script ({e})"
         got = _first_object(text)

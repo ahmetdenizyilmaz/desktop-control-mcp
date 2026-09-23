@@ -127,6 +127,12 @@ DEFAULTS = {
     # (decider_model; seconds, far dearer, no Jev key needed).
     "decider": "jev",
     "decider_model": "claude-opus-5-5",
+    # How the engine's own Claude calls (rescues, writing scripts, Claude
+    # decisions) are made: "api" straight to the model (an Anthropic key, or
+    # the OpenRouter key; seconds, cents) or "cli" through `claude -p` and
+    # the Claude login. "api" falls back to the CLI when it has no key or a
+    # call fails. The full agent that takes a task over always uses the CLI.
+    "claude_transport": "api",
     # Claude writes a new script with this model.
     "author_model": "opus",
     # Pulling a task's details (a song, a text) into a script's parameters:
@@ -158,6 +164,7 @@ SETTINGS_SCHEMA: dict[str, tuple] = {
     "jev_min_confidence": ("float", 0.3, 0.99),
     "rescue_tries": ("int", 0, 5), "rescue_model": ("str", 120),
     "decider": ("choice", ["jev", "claude"]), "decider_model": ("str", 120),
+    "claude_transport": ("choice", ["api", "cli"]),
     "author_model": ("str", 120), "param_model": ("str", 120),
     "quick_model": ("str", 120), "log_everything": ("bool",),
     "no_change_seconds": ("float", 3, 120),
@@ -378,6 +385,7 @@ OPENROUTER_URL = "https://openrouter.ai/api"
 #: environment of the LiteLLM proxy the app starts (core/proxy.py) — the
 #: proxy's config reads os.environ/GEMINI_API_KEY.
 GEMINI_KEY = "gemini-api-key"
+ANTHROPIC_KEY = "anthropic-api-key"       # core/claude_api reads it
 
 
 def _has_secret(name: str) -> bool:
@@ -537,6 +545,8 @@ class Agent:
 
     def __init__(self) -> None:
         self.settings = load_settings()
+        from core import claude_api
+        claude_api.configure(self.settings)
         self.store = Store()
         self.arbiter: Arbiter | None = None
         self.feed: list[dict] = []
@@ -856,6 +866,7 @@ class Agent:
             "model": self._last_model or self.settings.get("model") or "",
             "keys": {"gemini": _has_secret(GEMINI_KEY),
                      "openrouter": _has_secret(OPENROUTER_KEY),
+                     "anthropic": _has_secret(ANTHROPIC_KEY),
                      "jev": self._jev_has_key()},
             "key_tests": self._key_tests,
             "engine": self._engine_status,
@@ -1239,13 +1250,37 @@ class Agent:
         self._key_tests["claude"] = r
         return r
 
+    def save_anthropic_key(self, key: str) -> dict:
+        """An Anthropic API key for direct calls - vault only. Empty removes
+        it (direct calls then go through the OpenRouter key, if any)."""
+        key = (key or "").strip()
+        try:
+            if key:
+                vault.put(ANTHROPIC_KEY, key, note="Anthropic API key")
+            else:
+                vault.delete(ANTHROPIC_KEY)
+        except VaultError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception:
+            pass
+        self._key_tests.pop("claude_api", None)
+        return {"ok": True, "saved": bool(key)}
+
+    def test_claude_api(self) -> dict:
+        """One direct call on the rescue model: which key it went through,
+        how long, what it cost."""
+        from core import keys
+        r = keys.test_claude_api(self.settings.get("rescue_model") or "opus")
+        self._key_tests["claude_api"] = r
+        return r
+
     def test_decider(self) -> dict:
         """Whichever decider is selected: one real decision, timed."""
-        from core import keys
+        from core import keys, claude_api
         if (self.settings.get("decider") or "jev") == "claude":
-            r = keys.test_claude({"rescue_model":
-                                  self.settings.get("decider_model")
-                                  or "claude-opus-5-5"})
+            model = self.settings.get("decider_model") or "claude-opus-5-5"
+            r = (keys.test_claude_api(model) if claude_api.enabled()
+                 else keys.test_claude({"rescue_model": model}))
         else:
             r = keys.test_jev(self.settings)
         r["decider"] = self.settings.get("decider") or "jev"
@@ -1502,6 +1537,8 @@ class Agent:
                 refused.append(got)
         self.settings.update(clean)
         save_settings(self.settings)
+        from core import claude_api
+        claude_api.configure(self.settings)
         if refused:
             self._say("system", "Settings not saved: " + "; ".join(refused))
         browser.headless = bool(self.settings.get("browser_headless", True))

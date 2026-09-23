@@ -331,6 +331,18 @@ input::placeholder{color:var(--ink3)}
           <select data-key="author_model" class="claude-models"></select></label>
         <div class="crow"><button id="claude-test">Test Claude</button>
           <span class="hint" id="claude-msg"></span></div>
+        <label class="field" style="margin-top:12px"><span>How rescues, new scripts and Claude decisions reach
+          the model <b id="capi-state" class="dim"></b></span>
+          <select data-key="claude_transport">
+            <option value="api">Direct API — same model, seconds and cents (falls back to the login)</option>
+            <option value="cli">Claude login (claude -p) — no key needed, ~10 s and ~$0.09 a call</option>
+          </select></label>
+        <div class="crow" style="margin:-4px 0 6px">
+          <input id="anth-key" type="password" placeholder="Anthropic API key (optional — else the OpenRouter key is used)" style="flex:1">
+          <button id="anth-save">Save key</button>
+          <button id="capi-test">Test direct</button>
+        </div>
+        <p class="hint" id="capi-msg"></p>
       </div>
 
       <div class="card">
@@ -824,6 +836,9 @@ function testLine(t, what) {
   if (what === "decider" && t.decider === "claude" || what === "Claude")
     return `✓ working · ${t.model} · ${(t.latency_ms/1000).toFixed(1)} s`
       + (t.cost_usd ? ` · $${t.cost_usd.toFixed(3)}` : "") + ago(t.at);
+  if (what === "Direct API")
+    return `✓ direct · ${t.model} via ${t.route} · ${(t.latency_ms/1000).toFixed(1)} s`
+      + (t.cost_usd ? ` · ${money(t.cost_usd)}` : "") + ago(t.at);
   if (what === "decider")
     return `✓ Jev working · ${t.latency_ms} ms · chose "${t.choice}" (margin ${t.margin})` + ago(t.at);
   if (what === "OpenRouter")
@@ -849,9 +864,17 @@ function renderEngines(state, keys) {
   document.getElementById("claude-state").textContent =
     (s.provider || "anthropic") === "anthropic" ? "· your Claude login"
       : `· through ${s.provider} (Advanced)`;
+  document.getElementById("capi-state").textContent =
+    (s.claude_transport || "api") === "cli" ? "· using the login"
+      : keys.anthropic ? "· Anthropic key" : keys.openrouter ? "· via the OpenRouter key"
+      : "· no key — using the login";
+  document.getElementById("anth-key").placeholder = keys.anthropic
+    ? "Anthropic key saved — paste a new one to replace it (empty + Save removes it)"
+    : "Anthropic API key (optional — else the OpenRouter key is used)";
   const kt = state.key_tests || {};
   for (const [id, key, what] of [["jev-msg", "decider", "decider"],
-      ["claude-msg", "claude", "Claude"], ["or-msg", "openrouter", "OpenRouter"],
+      ["claude-msg", "claude", "Claude"], ["capi-msg", "claude_api", "Direct API"],
+      ["or-msg", "openrouter", "OpenRouter"],
       ["gm-msg", "gemini", "Gemini"]]) {
     const m = document.getElementById(id);
     if (m && !m.dataset.busy && kt[key]) m.textContent = testLine(kt[key], what);
@@ -885,6 +908,17 @@ document.getElementById("jev-test").onclick = () =>
 document.getElementById("claude-test").onclick = () =>
   runTest("claude-test", "claude-msg", () => api().test_claude(),
           "Asking the agent's model to reply OK (~10–30 s)…");
+document.getElementById("capi-test").onclick = () =>
+  runTest("capi-test", "capi-msg", () => api().test_claude_api(),
+          "One direct call on the rescue model (~3–10 s)…");
+document.getElementById("anth-save").onclick = async () => {
+  const el = document.getElementById("anth-key");
+  const r = await api().save_anthropic_key(el.value);
+  document.getElementById("capi-msg").textContent = r.ok
+    ? (r.saved ? "Key saved (encrypted). Press Test direct." : "Anthropic key removed.")
+    : ("Could not save: " + r.error);
+  el.value = ""; poll();
+};
 document.getElementById("open-logs").onclick = async () => {
   const r = await api().open_logs();
   if (!r.ok) flashSaved("✗ " + (r.error || "could not open"), true);

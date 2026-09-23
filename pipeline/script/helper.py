@@ -15,7 +15,9 @@ script could not; it only saves writing the script in advance.
 Called through the Claude Code CLI (`claude -p --model opus`), which uses
 the login already on this machine, so no key sits in this repo. ~10-30 s a
 call, which is why it is the fallback and not the loop: `budget` caps how
-many a run may spend.
+many a run may spend. A host with an API route sets `caller`: the model is
+then asked directly, with the screenshot inline, and the CLI is only the
+fallback when that call fails.
 """
 
 from __future__ import annotations
@@ -81,6 +83,9 @@ class OpusHelper:
         self.on_log = None
         self.spent_s = 0.0
         self.spent_usd = 0.0
+        #: Optional direct route: caller(prompt, screenshot) -> (text, cost)
+        #: or None to fall back to the CLI.
+        self.caller = None
 
     def _screenshot(self) -> Path | None:
         try:
@@ -101,7 +106,7 @@ class OpusHelper:
 
     def rescue(self, goal: str, error: str, scene: list[str],
                history: list[str] | None = None) -> dict:
-        if not self.claude or self.budget <= 0:
+        if not (self.claude or self.caller) or self.budget <= 0:
             return {"done": False, "why": "no helper budget", "steps": []}
         self.budget -= 1
         self.calls += 1
@@ -116,15 +121,41 @@ class OpusHelper:
             parts.append(f"WHAT FAILED: {error}")
         if history:
             parts.append("WHAT YOUR EARLIER STEPS DID:\n" + "\n".join(history))
-        if shot:
-            parts.append(f"SCREENSHOT (half size; element coordinates below "
-                         f"are full size): read the file {shot}")
-        parts.append("ELEMENTS ON SCREEN (kind, name, centre, id):\n"
-                     + "\n".join(scene))
-        parts.append(LANGUAGE)
-        prompt = "\n\n".join(parts)
+        rest = ["ELEMENTS ON SCREEN (kind, name, centre, id):\n"
+                + "\n".join(scene), LANGUAGE]
         t0 = time.time()
         self.log(f"    [opus] asking ({len(scene)} elements) - {goal[:90]}")
+        got = None
+        if self.caller is not None:
+            prompt = "\n\n".join(
+                parts + (["SCREENSHOT attached (half size; element "
+                          "coordinates below are full size)."] if shot else [])
+                + rest)
+            try:
+                got = self.caller(prompt, shot)
+            except Exception as exc:
+                self.log(f"    [opus] direct call failed: {exc}")
+        if got is not None:
+            text, cost = got
+            self._spent(prompt, text, t0, cost, shot)
+        elif not self.claude:
+            return {"done": False, "why": "helper call failed", "steps": []}
+        else:
+            if shot:
+                parts.append(f"SCREENSHOT (half size; element coordinates "
+                             f"below are full size): read the file {shot}")
+            prompt = "\n\n".join(parts + rest)
+            t0 = time.time()
+            text = self._cli(prompt, shot, t0)
+            if text is None:
+                return {"done": False, "why": "helper error", "steps": []}
+        plan = _first_json(text)
+        self.log(f"    [opus] {time.time() - t0:.0f}s: done={plan.get('done')} "
+                 f"steps={len(plan.get('steps') or [])} "
+                 f"- {str(plan.get('why', ''))[:120]}")
+        return plan
+
+    def _cli(self, prompt: str, shot, t0: float) -> str | None:
         try:
             proc = subprocess.run(
                 [self.claude, "-p", "--model", self.model,
@@ -136,27 +167,25 @@ class OpusHelper:
                 env=({**os.environ, **self.env} if self.env else None))
             outer = json.loads(proc.stdout or "{}")
             text = outer.get("result", "") or ""
-            cost = outer.get("total_cost_usd")
-            self.spent_s += time.time() - t0
-            self.spent_usd += float(cost or 0)
-            if self.on_cost is not None:
-                try:
-                    self.on_cost(time.time() - t0, cost)
-                except Exception:
-                    pass
-            if self.on_log is not None:
-                try:
-                    self.on_log(prompt, text, time.time() - t0, cost, shot)
-                except Exception:
-                    pass
+            self._spent(prompt, text, t0, outer.get("total_cost_usd"), shot)
+            return text
         except Exception as exc:
             self.log(f"    [opus] failed: {exc}")
-            return {"done": False, "why": f"helper error: {exc}", "steps": []}
-        plan = _first_json(text)
-        self.log(f"    [opus] {time.time() - t0:.0f}s: done={plan.get('done')} "
-                 f"steps={len(plan.get('steps') or [])} "
-                 f"- {str(plan.get('why', ''))[:120]}")
-        return plan
+            return None
+
+    def _spent(self, prompt, text, t0, cost, shot) -> None:
+        self.spent_s += time.time() - t0
+        self.spent_usd += float(cost or 0)
+        if self.on_cost is not None:
+            try:
+                self.on_cost(time.time() - t0, cost)
+            except Exception:
+                pass
+        if self.on_log is not None:
+            try:
+                self.on_log(prompt, text, time.time() - t0, cost, shot)
+            except Exception:
+                pass
 
     def parse(self, plan: dict, where: str) -> list[Step]:
         """Validate the answer exactly as a script file would be."""

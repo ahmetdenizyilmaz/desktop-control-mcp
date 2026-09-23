@@ -543,6 +543,18 @@ class ScriptEngine:
             return None, f"Claude: no saved script fits ({ms} ms)"
         return name, f"Claude chose {name} ({self._decider_model()}, {ms} ms)"
 
+    @staticmethod
+    def _direct_rescue(model: str):
+        """A rescue straight to the API, screenshot inline. None back means
+        the helper falls back to the CLI; the helper itself books the cost."""
+        from . import claude_api
+
+        def caller(prompt, shot):
+            got = claude_api.call(prompt, model, images=[shot] if shot else (),
+                                  max_tokens=6000, kind="rescue", record=False)
+            return None if got is None else (got.text, got.cost)
+        return caller
+
     def _claude_choose(self, goal, reject, options, model: str = "") -> str:
         try:
             from .authoring import _claude, _first_object
@@ -638,6 +650,9 @@ class ScriptEngine:
                 helper.on_log = lambda prompt, reply, s, c, shot: \
                     _tasklog.model(f"claude {helper.model}", "rescue",
                                    prompt, reply, s, c, shot=shot)
+                from . import claude_api
+                if claude_api.enabled():
+                    helper.caller = self._direct_rescue(helper.model)
             runner = Runner(
                 resolved, Watcher(hwnd=None), GuardedActuator(self.say),
                 confirm=self._confirm,
