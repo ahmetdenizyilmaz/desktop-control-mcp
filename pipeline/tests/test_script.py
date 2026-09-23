@@ -200,11 +200,17 @@ raises("type without a value is refused",
                       "steps": [{"do": "type", "into": "box"}]}),
        "needs a value")
 
-raises("for_each over anything but a literal list is refused",
+raises("for_each over a query or phrase is refused",
+       lambda: parse({"name": "t", "steps": [
+           {"do": "repeat", "for_each": "the search results", "as": "x",
+            "steps": [{"do": "click", "target": "a"}]}]}),
+       "exactly one parameter")
+
+raises("for_each over an UNDECLARED list parameter is refused",
        lambda: parse({"name": "t", "steps": [
            {"do": "repeat", "for_each": "{results}", "as": "x",
             "steps": [{"do": "click", "target": "a"}]}]}),
-       "non-empty list")
+       "declares no parameters")
 
 raises("an undeclared parameter is caught before anything runs",
        lambda: parse({"name": "t", "steps": [
@@ -1438,6 +1444,62 @@ check("skip_items resumes a repeat without redoing finished items",
       rep.act.log == ["click:c"] and out.items == {"a": True, "b": True,
                                                    "c": True},
       f"{rep.act.log} {out.items}")
+
+
+# --------------------------------------------------------------------------
+print("\nlist parameters - one script, any shopping list")
+# --------------------------------------------------------------------------
+_btns = scene(el("button", "süt", 0, 0), el("button", "ekmek", 0, 40),
+              el("button", "peynir", 0, 80))
+_list_script = {"name": "t", "params": {"items": ""}, "steps": [
+    {"do": "repeat", "for_each": "{items}", "as": "x",
+     "steps": [{"do": "click", "target": {"text": "{x}", "match": "exact"}}]}]}
+_lp = FakeActuator()
+_lo = run_script(_list_script, FakeWatcher(_btns), _lp).run(
+    {"items": "süt, ekmek, peynir"})
+check("a list parameter repeats over its comma-separated items",
+      _lp.log == ["click:süt", "click:ekmek", "click:peynir"]
+      and _lo.items == {"süt": True, "ekmek": True, "peynir": True},
+      str(_lp.log))
+_lp2 = FakeActuator()
+run_script(_list_script, FakeWatcher(_btns), _lp2).run(
+    {"items": "- süt\n- ekmek\n- süt"})
+check("one item per line, bullets and repeats dropped",
+      _lp2.log == ["click:süt", "click:ekmek"], str(_lp2.log))
+_lo3 = run_script(_list_script, FakeWatcher(_btns), FakeActuator()).run(
+    {"items": "  "})
+check("an empty list fails the step instead of silently doing nothing",
+      not _lo3.ok and any("empty" in o.detail for o in _lo3.failures()),
+      str([o.detail for o in _lo3.failures()]))
+_ev = []
+run_script(_list_script, FakeWatcher(_btns), FakeActuator(),
+           hooks=RunHooks(phase=lambda k, i: _ev.append((k, i.get("item")))))\
+    .run({"items": "süt, ekmek"})
+check("each finished item is reported (what a resume checkpoint records)",
+      [x for x in _ev if x[0] == "item_end"] == [("item_end", "süt"),
+                                                 ("item_end", "ekmek")],
+      str(_ev))
+
+
+class _MisreadWatcher(FakeWatcher):
+    """OCR reads 'jpy', the accessibility tree has the real text."""
+
+    def text_scene(self):
+        self.pixel_looks += 1
+        return scene(el("text", "jpy ikinci deneme", 0, 0, source="ocr"))
+
+    def scene(self, force=False):
+        self.looks += 1
+        return scene(el("tab", "jev ikinci deneme. Modified.", 0, 0))
+
+
+_mw = _MisreadWatcher(scene())
+_mr = run_script({"name": "t", "steps": [
+    {"do": "wait_for", "target": "jev ikinci deneme", "timeout": 5}]},
+    _mw, FakeActuator()).run()
+check("an OCR misread cannot fail a text check the tree can answer",
+      _mr.ok and _mw.pixel_looks >= 1 and _mw.looks >= 1,
+      f"ok={_mr.ok} pixels={_mw.pixel_looks} tree={_mw.looks}")
 
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)

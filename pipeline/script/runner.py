@@ -76,6 +76,27 @@ _ACTING = ("click", "double_click", "right_click", "type", "key", "drag",
 SETTLE_S = 0.4
 
 
+def split_list(value: str) -> list[str]:
+    """A list parameter's items: one per line, else split on ";" or ",".
+    Blank items and repeats are dropped - an item is also a key in the
+    report, and "süt, süt" is one thing to buy, not two."""
+    v = (value or "").strip()
+    if not v:
+        return []
+    if "\n" in v:
+        parts = v.splitlines()
+    elif ";" in v:
+        parts = v.split(";")
+    else:
+        parts = v.split(",")
+    out: list[str] = []
+    for p in parts:
+        p = p.strip().strip("-•*").strip()
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
 class Stopped(Exception):
     """The run was told to stop. Never caught by the failure policy."""
 
@@ -773,6 +794,7 @@ class Runner:
         """
         t0 = time.time()
         deadline = t0 + timeout
+        polls = 0
         while True:
             if self.should_stop():
                 raise Stopped()
@@ -791,7 +813,15 @@ class Runner:
                 if not present and quick is None:
                     return True
             else:
-                scene = (self.watcher.text_scene() if _text_only(sel)
+                polls += 1
+                # Pixels are cheap and see drawn text, so a text-only check
+                # starts there - but OCR can misread what is really there: a
+                # spell-check squiggle under "jev" in Notepad made it read
+                # "jpy", and a step that had worked failed twice. Every third
+                # poll also asks the accessibility tree, which holds the text
+                # exactly (Notepad names the tab after it).
+                pixels_only = _text_only(sel) and polls % 3 != 0
+                scene = (self.watcher.text_scene() if pixels_only
                          else self.watcher.scene(force=True))
                 res = resolve.find(scene, sel)
                 if present and res.matches:
@@ -1283,8 +1313,15 @@ class Runner:
                 f"→ {label} ({len(branch)} steps)")
 
     def _do_repeat(self, step, values, where, depth) -> str:
-        items = ([substitute(v, values, where) for v in step.for_each]
-                 if step.for_each else [str(i + 1) for i in range(step.times)])
+        if step.for_each_param:
+            items = split_list(values.get(step.for_each_param, ""))
+            if not items:
+                raise StepFailed(f"{{{step.for_each_param}}} is empty - "
+                                 f"nothing to repeat over")
+        elif step.for_each:
+            items = [substitute(v, values, where) for v in step.for_each]
+        else:
+            items = [str(i + 1) for i in range(step.times)]
         name = step.as_name or "item"
         done = 0
         for n, item in enumerate(items):
@@ -1308,8 +1345,12 @@ class Runner:
                 # product starts from its own search, so the basket cannot
                 # be corrupted by carrying on.
                 self.report.items[item] = False
+                self.hooks.phase("item_end", {"where": where, "item": item,
+                                              "ok": False})
                 continue
             self.report.items[item] = True
+            self.hooks.phase("item_end", {"where": where, "item": item,
+                                          "ok": True})
             if self._last_pick:
                 self.report.picks[item] = self._last_pick
             done += 1

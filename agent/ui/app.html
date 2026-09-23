@@ -106,6 +106,11 @@ h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3
 .card h3{margin:0 0 5px;font-size:14px;font-weight:600}
 .card p{margin:0;color:var(--ink2);font-size:12.5px;line-height:1.5}
 .sgroup{margin:4px 0 16px}
+#unfinished{flex:0 0 auto;border-bottom:1px solid var(--line);background:#16202e;
+  padding:10px 20px}
+#unfinished .urow{display:flex;align-items:center;gap:10px;margin:3px 0;font-size:13px}
+#unfinished .urow .t{flex:1;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
 #pane-settings h2{margin-top:26px}
 #pane-settings h2:first-of-type{margin-top:4px}
 .engine-strip{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;
@@ -174,6 +179,7 @@ input::placeholder{color:var(--ink3)}
 <main>
   <!-- TASK -->
   <div class="pane sel" id="pane-task">
+    <div id="unfinished" hidden></div>
     <div id="feed">
       <div class="empty" id="welcome">
         Describe a task and it will be done on this computer — desktop apps,
@@ -643,6 +649,7 @@ function render(state) {
      <div class="stat"><span>mail</span><b>${(ch.mail||{}).configured ? esc(ch.mail.to) : "not set up"}</b></div>`;
 
   applySettings(state);
+  renderUnfinished(state.unfinished || []);
   // Key presence and proxy state are shown, never the key itself.
   const keys = state.keys || {};
   renderEngines(state, keys);
@@ -664,7 +671,7 @@ const fmt = s => { s = Math.round(s || 0);
 const fmtTok = n => n >= 1e6 ? (n/1e6).toFixed(1)+"M"
   : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n|0);
 // "~$0.08" while the price is an estimate, "$0.12" once it is the real one.
-const costBit = u => u.cost ? ` · ${u.estimated ? "~" : ""}$${u.cost.toFixed(2)}` : "";
+const costBit = u => u.cost ? ` · ${u.estimated ? "~" : ""}${money(u.cost)}` : "";
 
 async function poll() {
   try { render(await api().get_state()); } catch (e) {}
@@ -878,6 +885,28 @@ document.getElementById("or-test").onclick = () =>
 document.getElementById("gm-test").onclick = () =>
   runTest("gm-test", "gm-msg", () => api().test_gemini(), "Checking the key…");
 
+// -- runs that were cut short -----------------------------------------------------
+const money = c => c >= 0.01 ? `$${c.toFixed(2)}` : c >= 0.0001 ? `$${c.toFixed(4)}`
+  : c ? `$${c.toFixed(6)}` : "$0";
+let unfinishedKey = "";
+function renderUnfinished(list) {
+  const box = document.getElementById("unfinished");
+  const key = JSON.stringify(list.map(u => [u.id, u.done, u.status]));
+  if (key === unfinishedKey) return;          // no repaint while nothing changed
+  unfinishedKey = key;
+  box.hidden = !list.length;
+  box.innerHTML = list.map(u => `<div class="urow">
+      <span class="t"><b>Cut short</b> (${esc(u.status)}): ${esc(u.task || u.script)}
+        — ${u.done} item(s) done${u.failed ? `, ${u.failed} failed` : ""}</span>
+      <button class="primary" onclick="resumeRun('${esc(u.id)}')">Resume</button>
+      <button onclick="dismissRun('${esc(u.id)}')">Dismiss</button></div>`).join("");
+}
+window.resumeRun = async id => {
+  const r = await api().resume_run(id);
+  if (!r.ok) alert(r.error); poll();
+};
+window.dismissRun = async id => { await api().dismiss_run(id); poll(); };
+
 // -- Scripts tab ---------------------------------------------------------------
 const openSteps = new Set();
 async function renderScripts() {
@@ -904,6 +933,9 @@ function scriptCard(sc) {
     sc.patched ? `<span class="sbadge">fixed by Claude</span>` : "",
     sc.verified === false ? `<span class="sbadge warn">not verified yet</span>` : "",
     sc.runs ? `<span class="sbadge">${sc.ok_runs}/${sc.runs} runs ok</span>` : "",
+    sc.avg_seconds != null ? `<span class="sbadge" title="average per run, all models included">`
+      + `⏱ ${fmt(sc.avg_seconds)}` + (sc.avg_cost != null ? ` · ${money(sc.avg_cost)}` : "")
+      + `</span>` : "",
   ].join("");
   return `<div class="card" id="sc-${id}">
     <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">

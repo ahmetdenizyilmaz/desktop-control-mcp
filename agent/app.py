@@ -594,6 +594,8 @@ class Agent:
         self._forced: tuple | None = None
         self._engine = None
         self._cancel_watch = None
+        #: Time and cost of the task in progress (or the last one).
+        self._ledger = None
         #: The final message of the Claude run, for saving a fix back.
         self._last_result: dict = {"text": "", "error": True}
 
@@ -629,6 +631,16 @@ class Agent:
             if priced:
                 u["cost"] = priced
                 u["estimated"] = True
+        # Everything else this task paid for - Jev, rescues, a script written
+        # for it - on top of the agent's own bill. The agent's final bill is
+        # added to the ledger only when it ends, so it is never counted twice.
+        led = getattr(self, "_ledger", None)
+        if led is not None:
+            extra = sum(t["cost"] for k, t in led.totals().items()
+                        if k != "agent")
+            if extra:
+                u["cost"] = (u.get("cost") or 0.0) + extra
+                u["extra_cost"] = extra
         return u
 
     def _add_usage(self, usage, message_id: str | None = None) -> None:
@@ -838,6 +850,8 @@ class Agent:
                      "jev": self._jev_has_key()},
             "key_tests": self._key_tests,
             "engine": self._engine_status,
+            "ledger": (self._ledger.view() if self._ledger else None),
+            "unfinished": ([] if self.running else self._unfinished()),
             "proxy": (proxy.status(_endpoint_url(self.settings))
                       if _endpoint_url(self.settings) else None),
         }
@@ -1265,6 +1279,13 @@ class Agent:
                 "verified": sc.extra.get("verified"),
                 "note": sc.extra.get("note", ""),
                 "runs": st.get("runs", 0), "ok_runs": st.get("ok", 0),
+                "avg_seconds": (st.get("seconds_total", 0) / st["runs"]
+                                if st.get("runs") and st.get("seconds_total")
+                                else None),
+                "avg_cost": (st.get("cost_total", 0) / st["runs"]
+                             if st.get("runs") and "cost_total" in st
+                             else None),
+                "last_seconds": st.get("last_seconds"),
                 "last": st.get("last"), "last_ok": st.get("last_ok")})
         out = [{"site": k, "scripts": v} for k, v in sorted(groups.items())]
         if blocks:
@@ -1314,6 +1335,43 @@ class Agent:
         path = lib.path_of(name)
         return {"ok": True, "name": name, "json": to_json(sc),
                 "lines": lines(sc.steps), "path": str(path) if path else ""}
+
+    # -- resuming a run that was cut short ----------------------------------
+    def _unfinished(self) -> list[dict]:
+        try:
+            from core import checkpoint
+            return [{"id": d["id"], "task": d.get("task", ""),
+                     "script": d.get("script", ""),
+                     "done": len(d.get("done", [])),
+                     "failed": len(d.get("failed", [])),
+                     "status": d.get("status", ""),
+                     "updated": d.get("updated")}
+                    for d in checkpoint.unfinished()[:5]]
+        except Exception:
+            return []
+
+    def resume_run(self, run_id: str) -> dict:
+        """Run the same script with the same arguments, skipping the items
+        the interrupted run already finished."""
+        from core import checkpoint, pipeline_bridge as bridge
+        d = checkpoint.load(run_id)
+        if d is None:
+            return {"ok": False, "error": "that run is no longer on record"}
+        if d.get("script") not in bridge.library(fresh=True).local():
+            return {"ok": False, "error": f"script {d.get('script')!r} is gone"}
+        with self._start_lock:
+            if self.running:
+                return {"ok": False, "error": "A task is already running."}
+        self._forced = (d["script"], d.get("args") or {}, d.get("done") or [],
+                        run_id)
+        r = self.run_task(f"Resume: {d.get('task') or d['script']}")
+        if not r.get("ok"):
+            self._forced = None
+        return r
+
+    def dismiss_run(self, run_id: str) -> dict:
+        from core import checkpoint
+        return {"ok": checkpoint.dismiss(run_id)}
 
     def run_script(self, name: str, args: dict | None = None) -> dict:
         """Run one script now, skipping Jev (the Scripts tab's Run)."""
@@ -1576,6 +1634,11 @@ class Agent:
 
         self._say("system", f"Working on: {task}")
         self._refresh_border()          # blue: running, thinking
+        # Every model call and every wait in this task, with its time and
+        # cost - not only the Claude agent's bill (core/ledger.py).
+        from core import ledger as _ledger
+        _ledger.current = _ledger.Ledger(task)
+        self._ledger = _ledger.current
         # "cancel" from Telegram (or a chat a script names) stops the task
         # at ANY point - not only while a step happens to wait for a reply.
         try:
@@ -1598,7 +1661,19 @@ class Agent:
                                    f"{r['detail']}")
                 return
             prompt = outcome.prompt if outcome is not None else ""
-            asyncio.run(self._drive(task, prompt=prompt))
+            t_agent = time.time()
+            try:
+                asyncio.run(self._drive(task, prompt=prompt))
+            finally:
+                u = self._usage_view()
+                self._ledger.add("agent", time.time() - t_agent,
+                                 u["cost"] if u.get("cost") else None,
+                                 u.get("model") or "")
+            if (outcome is not None and self._engine is not None
+                    and self._engine.checkpoint is not None
+                    and not self._last_result.get("error")
+                    and not self._cancel.is_set()):
+                self._engine.checkpoint.finish("done")
             if outcome is not None and outcome.script and self._engine:
                 # Claude finished what a script could not: keep its fix.
                 try:
@@ -1643,6 +1718,14 @@ class Agent:
             took = f"Finished in {mins}m {secs}s." if mins else f"Finished in {secs}s."
             spent = _usage_line(self._usage)
             self._say("system", took + (f"  {spent}." if spent else ""))
+            try:
+                from core import ledger as _ledger
+                line = self._ledger.summary() if self._ledger else ""
+                if line:
+                    self._say("system", line)
+                _ledger.current = None
+            except Exception:
+                pass
             self._come_to_front()
 
     def _route(self, task: str):

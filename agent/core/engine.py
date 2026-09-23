@@ -158,6 +158,8 @@ class ScriptEngine:
         self._last_event = self._last_acted = time.time()
         self._waiting = self._rescuing = False
         self._extended = 0.0
+        #: This run's resume record (core/checkpoint.py).
+        self.checkpoint = None
 
     # -- status ---------------------------------------------------------
     def _status(self, state: str, script: str = "", detail: str = "") -> None:
@@ -207,10 +209,58 @@ class ScriptEngine:
         except Exception as e:
             return None, f"Jev failed ({type(e).__name__}: {e})"
         ms = int((time.time() - t0) * 1000)
+        from . import ledger
+        d = getattr(verdict, "decision", None)
+        ledger.record("decide", ms / 1000,
+                      d.cost_usd if d is not None and d.real else None,
+                      "jev: which script")
         if idx is None:
+            second = self._second_opinion(task, cands, verdict)
+            if second:
+                return second, (f"Jev leaned to {second} but was unsure "
+                                f"({verdict.why}); a quick check confirmed it")
             return None, f"Jev: no saved script fits ({verdict.why}, {ms} ms)"
         name = cands[idx]["name"]
         return name, f"Jev chose {name} ({verdict.why}, {ms} ms)"
+
+    def _second_opinion(self, task: str, cands: list[dict],
+                        verdict) -> str | None:
+        """Jev hesitated but did point at a script - ask a small model.
+
+        Jev's confidence splits across near-duplicates and sags on a Turkish
+        request against an English description: "not defterine … yaz" put
+        notepad/write-text on top at 0.22, under the 0.6 bar, and the task
+        went off to have a whole new script written ($0.12 and two rescues)
+        for a job that already had one. A one-second check by a small model
+        over Jev's top picks is far cheaper than that. An answer of "none"
+        from Jev itself is trusted - only a hesitant yes is re-asked.
+        """
+        ans = getattr(verdict, "answer", None)
+        ranked = list(getattr(ans, "ranked", None) or [])
+        if not ranked or ranked[0][0] == "none":
+            return None
+        top = []
+        for key, _p in ranked[:4]:
+            if key == "none":
+                continue
+            try:
+                top.append(cands[int(key)])
+            except (ValueError, IndexError):
+                continue
+        if not top:
+            return None
+        opts = {str(i): f"{r['name']} — {r['description'][:140]}"
+                for i, r in enumerate(top)}
+        opts["none"] = "none of these does this task"
+        key = self._claude_choose(
+            f"Which saved automation script does THIS task: {task!r}? Only "
+            f"a script that does this very task counts.", "", opts)
+        if key in ("", "none"):
+            return None
+        try:
+            return top[int(key)]["name"]
+        except (ValueError, IndexError):
+            return None
 
     # -- 2. parameters ----------------------------------------------------
     def fill_params(self, script, task: str) -> dict | None:
@@ -238,7 +288,9 @@ class ScriptEngine:
             "give. A value is the THING the parameter names (a song, a "
             "product, a message) - never a command word of the task itself "
             "(open, play, start, aç, çal, başlat): 'spotify aç' gives no "
-            "query, so query is null.")
+            "query, so query is null. A parameter a script repeats over "
+            "(items, products, names) takes ALL of them as one comma-separated "
+            "string: 'süt, ekmek ve peynir al' -> \"süt, ekmek, peynir\".")
         try:
             from . import quick
             from .authoring import _first_object
@@ -325,6 +377,7 @@ class ScriptEngine:
         elif kind == "step_start":
             self._status("acting", detail=where)
         elif kind in ("wait_begin", "confirm_begin"):
+            self._wait_t0 = time.time()
             reason = (info.get("reason") if kind == "wait_begin"
                       else f"your OK to click '{info.get('name', '')}'")
             self._waiting = True
@@ -337,6 +390,9 @@ class ScriptEngine:
                                "since": time.time()})
         elif kind in ("wait_end", "confirm_end"):
             self._waiting = False
+            from . import ledger
+            ledger.record("waiting", time.time() - getattr(self, "_wait_t0",
+                                                           time.time()))
             if self.wait is not None:
                 self.wait.end()
             self._status("acting", detail=where)
@@ -353,6 +409,10 @@ class ScriptEngine:
             self._rescuing = True
             self._status("rescuing", detail=f"Claude working it out "
                          f"(round {info.get('round')}/{info.get('of')})")
+        elif kind == "item_end":
+            if self.checkpoint is not None:
+                self.checkpoint.item(str(info.get("item", "")),
+                                     bool(info.get("ok")))
         elif kind == "pick_unsure":
             self.say("system", f"Jev could not choose at {where}: "
                                f"{info.get('why', '')}")
@@ -403,8 +463,16 @@ class ScriptEngine:
                     return k, 1.0
                 why = "Claude could not choose"
             else:
+                client = self.jev()
+                before = client.stats.cost_usd
+                t0 = time.time()
                 try:
-                    return jev(goal, reject, options)
+                    got = jev(goal, reject, options)
+                    from . import ledger
+                    ledger.record("decide", time.time() - t0,
+                                  client.stats.cost_usd - before,
+                                  "jev: which item")
+                    return got
                 except NoChoice as e:
                     why = str(e)
             key = self._claude_choose(goal, reject, options)
@@ -441,7 +509,8 @@ class ScriptEngine:
                 "not.\nTASK: " + task + "\nSCRIPTS:\n" + opts
                 + '\nReply with only {"choice": <number>} or '
                   '{"choice": "none"}.',
-                self._decider_model(), 120, self.provider_env)
+                self._decider_model(), 120, self.provider_env,
+                kind="decide")
         except Exception as e:
             return None, f"Claude could not decide ({e})"
         ms = int((time.time() - t0) * 1000)
@@ -462,11 +531,13 @@ class ScriptEngine:
                                                 options.items())
                    + '\nReply with only {"choice": "<key>"}.')
             if model:                     # the decider: a model you chose
-                text = _claude(ask, model, 120, self.provider_env)
+                text = _claude(ask, model, 120, self.provider_env,
+                               kind="decide")
             else:                         # a tie-break: the fast path
                 from . import quick
                 text, _how = quick.complete(ask, self.settings,
-                                            env=self.provider_env)
+                                            env=self.provider_env,
+                                            kind="decide")
             k = str(_first_object(text).get("choice", ""))
             return k if k in options else ""
         except Exception:
@@ -487,7 +558,8 @@ class ScriptEngine:
         except (ValueError, IndexError):
             return ""
 
-    def execute(self, name: str, args: dict, task: str = ""):
+    def execute(self, name: str, args: dict, task: str = "",
+                skip: list[str] | None = None, run_id: str = ""):
         """Run a script on the tool worker thread; return the Runner.
 
         The task thread meanwhile watches: it ticks the wait policy
@@ -507,6 +579,11 @@ class ScriptEngine:
         if cancel.get("window") and self.cancel_watch is not None:
             self.cancel_watch.watch_chat(str(cancel["window"]))
 
+        from .checkpoint import Checkpoint
+        try:
+            self.checkpoint = Checkpoint(task, name, args, skip, run_id)
+        except Exception:
+            self.checkpoint = None      # resuming is a convenience, never a blocker
         self.pulse = ScreenPulse().start()
         self.wait = WaitPolicy(
             float(self.settings.get("remind_after_minutes") or 5) * 60,
@@ -532,6 +609,10 @@ class ScriptEngine:
                     stuck_dir=paths.data("workspace", "stuck",
                                          ".keep").parent,
                     env=self.provider_env)
+            if helper is not None:
+                from . import ledger as _ledger
+                helper.on_cost = lambda s, c: _ledger.record(
+                    "rescue", s, c, "claude: stuck step")
             runner = Runner(
                 resolved, Watcher(hwnd=None), GuardedActuator(self.say),
                 confirm=self._confirm,
@@ -541,6 +622,7 @@ class ScriptEngine:
                 cursor=_CursorProxy(), helper=helper,
                 honour_trust=(level == "auto"),
                 rescue_tries=max(1, tries),
+                skip_items=set(skip or ()),
                 hooks=self._hooks())
             holder["runner"] = runner
             runner.run(args)
@@ -550,6 +632,11 @@ class ScriptEngine:
                            "since": time.time()})
         self._status("acting", script=name)
         hang_s = float(self.settings.get("hang_seconds") or 120)
+        from . import ledger
+        led = ledger.current
+        t_exec = time.time()
+        other_before = (sum(t["seconds"] for t in led.totals().values())
+                        if led else 0.0)
         box, done = tools_sdk._worker.call(job)
         stop_seen = 0.0
         try:
@@ -581,6 +668,14 @@ class ScriptEngine:
                         r.hung = True
                     return r
         finally:
+            if led is not None:
+                # The script's own time: the run, minus the model calls and
+                # the waiting for a person that happened inside it (already
+                # on the ledger under their own names).
+                other = (sum(t["seconds"] for t in led.totals().values())
+                         - other_before)
+                led.add("script", max(0.0, time.time() - t_exec - other),
+                        0.0, name)
             self.pulse.stop()
             if self.wait.paused_by_us and tools_sdk.is_paused():
                 tools_sdk.set_paused(False)
@@ -597,14 +692,21 @@ class ScriptEngine:
             self._set_status_raw(d)
 
     # -- 4. the whole route -----------------------------------------------
-    def handle(self, task: str, forced: tuple[str, dict] | None = None
-               ) -> Outcome:
-        """Route a task. `forced` = (script, args): run that script (the
-        Scripts tab's Run button), skipping recognition."""
+    def handle(self, task: str, forced: tuple | None = None) -> Outcome:
+        """Route a task. `forced` = (script, args[, skip, run_id]): run that
+        script (the Scripts tab's Run, or a Resume), skipping recognition."""
         lib = bridge.library()
         authored = False
+        skip, run_id = [], ""
         if forced is not None:
-            name, args = forced
+            name, args = forced[0], forced[1]
+            if len(forced) > 2:
+                skip, run_id = list(forced[2] or []), str(forced[3] or "")
+                if skip:
+                    self.say("system", f"Resuming — skipping {len(skip)} "
+                                       f"item(s) already done: "
+                                       f"{', '.join(skip[:8])}"
+                                       + ("…" if len(skip) > 8 else ""))
             if name not in lib.local():
                 return Outcome("claude", why=f"no script {name!r}")
         else:
@@ -624,7 +726,7 @@ class ScriptEngine:
                 name, why2 = authoring.author(task, lib, self.settings,
                                               self.provider_env, self.say)
                 self.say("system", why2)
-                authored = bool(name)
+                authored = bool(name) and not authoring.reused
             if not name:
                 return Outcome("claude", why=why)
             script = lib.local()[name]
@@ -641,8 +743,9 @@ class ScriptEngine:
             self.say("system", f"Parameters: {args}")
 
         t0 = time.time()
-        runner = self.execute(name, args, task)
+        runner = self.execute(name, args, task, skip=skip, run_id=run_id)
         if runner is None:
+            self._finish_checkpoint("stopped")
             self._status("done", detail="stopped")
             return Outcome("stopped", why="stopped during a hung step",
                            script=name)
@@ -650,6 +753,7 @@ class ScriptEngine:
         secs = time.time() - t0
         self._record_stats(name, rep)
         if rep.ok and not getattr(runner, "hung", False):
+            self._finish_checkpoint("done")
             self._status("done", detail=f"{secs:.0f}s")
             if authored:
                 from . import authoring
@@ -660,9 +764,11 @@ class ScriptEngine:
                                f"{rep.summary()}" + _bought_lines(rep))
             return Outcome("done", script=name, report=rep)
         if rep.stopped:
+            self._finish_checkpoint("stopped")
             self._status("done", detail="stopped")
             self.say("system", f"Script stopped: {rep.stopped_by or 'by you'}")
             return Outcome("stopped", script=name, report=rep)
+        self._finish_checkpoint("handed over to Claude")
         self._status("rescuing", detail="Claude takes over")
         self.say("system", f"Script {name} got stuck — Claude takes over "
                            f"from where it stopped.")
@@ -673,6 +779,13 @@ class ScriptEngine:
                        authored=authored, where=failed_where(rep),
                        prompt=takeover_prompt(task, lib, name, args, rep,
                                               shot))
+
+    def _finish_checkpoint(self, status: str) -> None:
+        if self.checkpoint is not None:
+            try:
+                self.checkpoint.finish(status)
+            except Exception:
+                pass
 
     def _unlist(self, lib, name: str, why: str) -> None:
         from . import authoring
@@ -709,6 +822,15 @@ class ScriptEngine:
             st = data.setdefault(name, {"runs": 0, "ok": 0})
             st["runs"] += 1
             st["ok"] += 1 if rep.ok else 0
+            from . import ledger
+            led = ledger.current
+            if led is not None:
+                v = led.view()
+                st["seconds_total"] = (st.get("seconds_total", 0.0)
+                                       + v["elapsed"])
+                st["cost_total"] = st.get("cost_total", 0.0) + v["cost"]
+                st["last_seconds"] = round(v["elapsed"], 1)
+                st["last_cost"] = round(v["cost"], 6)
             st["last"] = time.time()
             st["last_ok"] = bool(rep.ok)
             p.write_text(json.dumps(data, indent=1), encoding="utf-8")

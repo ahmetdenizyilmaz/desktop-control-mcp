@@ -59,6 +59,10 @@ STEPS ("do" decides which fields matter):
   {"do":"expect","target":SEL} / {"do":"gone","target":SEL}   assert
   {"do":"if","present":SEL,"then":[steps],"else":[steps]}
   {"do":"repeat","for_each":["a","b"],"as":"item","steps":[...]}  or "times": N
+  {"do":"repeat","for_each":"{items}","as":"item","steps":[...]}
+      a LIST parameter: the person gives "süt, ekmek, peynir" (or one per line) and the
+      steps run once per item. Use this for shopping lists, recipients, files - never
+      hard-code the items the person happened to name.
   {"do":"call","script":"<existing script name>","with":{"param":"value"}}
   {"do":"wait_message","words":["buy"],"stop_words":["cancel"],"timeout":1800}
       wait for a NEW chat message from a person - use this (not wait_for) whenever the
@@ -85,16 +89,23 @@ RULES
 """
 
 
-def _claude(prompt: str, model: str, timeout: float, env: dict | None) -> str:
+def _claude(prompt: str, model: str, timeout: float, env: dict | None,
+            kind: str = "write") -> str:
+    """One Claude CLI call. Its time and reported cost go on the task's
+    ledger under `kind` (write, decide, details)."""
     exe = shutil.which("claude")
     if not exe:
         raise RuntimeError("Claude Code CLI not installed")
+    t0 = time.time()
     p = subprocess.run(
         [exe, "-p", "--model", model, "--output-format", "json"],
         input=prompt, capture_output=True, text=True, encoding="utf-8",
         timeout=timeout, env={**os.environ, **(env or {})},
         creationflags=0x08000000)
     out = json.loads(p.stdout or "{}")
+    from . import ledger
+    ledger.record(kind, time.time() - t0, out.get("total_cost_usd"),
+                  f"claude {model}")
     if out.get("is_error"):
         raise RuntimeError(str(out.get("result", ""))[:200])
     return str(out.get("result", "") or "")
@@ -141,11 +152,19 @@ def _apps() -> str:
         return "(unknown)"
 
 
+#: True after `author` pointed at an existing script instead of writing one.
+reused = False
+
+
 def author(task: str, lib, settings: dict, env: dict | None = None,
            say=lambda k, t: None) -> tuple[str | None, str]:
     """Have Claude write a script for `task`, validate it, save it as a
-    draft. Returns (name, why). None = Claude declined or could not."""
+    draft. Returns (name, why). None = Claude declined or could not.
+    `reused` tells whether the name is an existing script Claude chose
+    instead of writing a duplicate."""
     from script.schema import parse, ScriptError
+    global reused
+    reused = False
 
     base = (
         "You write automation scripts for a Windows desktop agent. The agent runs "
@@ -156,7 +175,9 @@ def author(task: str, lib, settings: dict, env: dict | None = None,
         f"{GUIDE}\n"
         "Write ONE script that does this task, generalised with params where the "
         "person named a specific thing (a song, a product, a message, a person). "
-        "Reply with ONLY: {\"script\": <the script object>}. If this task is not "
+        "Reply with ONLY: {\"script\": <the script object>}. If an EXISTING "
+        "script above already does this task (only its parameters differ), do "
+        "not write a copy - reply {\"use\": \"<its name>\"}. If this task is not "
         "something to automate on screen (a question you could answer, research, "
         "a one-off file job), reply {\"script\": null, \"why\": \"...\"}.")
     prompt, last_err = base, ""
@@ -167,6 +188,10 @@ def author(task: str, lib, settings: dict, env: dict | None = None,
         except Exception as e:
             return None, f"Claude could not write a script ({e})"
         got = _first_object(text)
+        use = str(got.get("use") or "").strip()
+        if use and use in lib.local():
+            reused = True
+            return use, f"Claude: the saved script {use} already does this"
         raw = got.get("script") if "script" in got else got
         if raw is None:
             return None, f"Claude: not a screen task ({got.get('why', '')})"

@@ -155,8 +155,8 @@ def engine_with(report, runner_none=False, params=None):
     e = engine.ScriptEngine({}, say, client=FakeClient())
     e.recognise = lambda task: ("migros/weekly-shop", "Jev chose it")
     e.fill_params = lambda script, task: params if params is not None else {}
-    e.execute = (lambda n, a, t="": None) if runner_none \
-        else (lambda n, a, t="": FakeRunner(report))
+    e.execute = (lambda n, a, t="", **kw: None) if runner_none \
+        else (lambda n, a, t="", **kw: FakeRunner(report))
     return e
 
 
@@ -530,7 +530,7 @@ replies[:] = ['{"script": {"name": "paint/open", "description": "Open Paint",'
               '"Paint"}]}}']
 ok_rep2 = Report(script="paint/open")
 ok_rep2.outcomes.append(StepOutcome("x", "open", "opened", True, 1))
-ea.execute = lambda n, a, t="": FakeRunner(ok_rep2)
+ea.execute = lambda n, a, t="", **kw: FakeRunner(ok_rep2)
 out = ea.handle("open paint")
 authoring._claude = real_claude
 lib_now = bridge.library()
@@ -660,6 +660,170 @@ check("every instant-save control maps to a known setting",
       str(sorted(data_keys - set(appmod.SETTINGS_SCHEMA))))
 dup = [i for i in ids if html.count(f'id="{i}"') > 1]
 check("no element id is used twice", not dup, str(dup))
+
+
+# --------------------------------------------------------------------------
+print("\nevery model's time and cost is on the bill")
+# --------------------------------------------------------------------------
+from core import ledger as ledger_mod                         # noqa: E402
+
+L = ledger_mod.Ledger("weekly shop")
+L.add("decide", 0.4, 0.000035)
+L.add("details", 1.1, 0.00002)
+L.add("script", 13.0, 0.0)
+L.add("rescue", 14.0, 0.21)
+L.add("rescue", 16.0, 0.19)
+L.add("agent", 60.0, 0.67)
+L.add("waiting", 30.0)
+sm = L.summary()
+check("the bill adds up every model, not just the agent",
+      abs(L.cost() - (0.000035 + 0.00002 + 0.21 + 0.19 + 0.67)) < 1e-9, sm)
+check("the time line names each part, with call counts",
+      "deciding 0.4s" in sm and "Claude rescue 30.0s ×2" in sm
+      and "Claude agent 1m 0s" in sm and "waiting for you 30.0s" in sm, sm)
+check("tiny costs are shown as numbers, not as $0.00",
+      ledger_mod.money(0.000035) == "$0.000035"
+      and ledger_mod.money(0.004) == "$0.0040"
+      and ledger_mod.money(0.67) == "$0.67")
+L2 = ledger_mod.Ledger("x")
+L2.add("agent", 5.0, None)
+check("a part with no reported cost says so, never '$0'",
+      "cost not reported" in L2.summary(), L2.summary())
+
+ledger_mod.current = ledger_mod.Ledger("t")
+import subprocess as _sp                                     # noqa: E402
+_real_run = _sp.run
+
+
+class _P:
+    stdout = json.dumps({"result": "ok", "total_cost_usd": 0.12})
+
+
+authoring.subprocess.run = lambda *a, **k: _P()
+authoring._claude("hi", "opus", 10, None, kind="write")
+authoring.subprocess.run = _real_run
+tw = ledger_mod.current.totals().get("write", {})
+check("a Claude CLI call records its reported cost under its kind",
+      abs(tw.get("cost", 0) - 0.12) < 1e-9 and tw.get("calls") == 1, str(tw))
+
+from core import quick as quick_mod                           # noqa: E402
+
+
+class _R:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, *a):
+        return json.dumps({"choices": [{"message": {"content": "{}"}}],
+                           "usage": {"cost": 0.00003},
+                           "model": "anthropic/claude-haiku-4.5"}).encode()
+
+
+_real_key = quick_mod._openrouter_key
+_real_open = quick_mod.urllib.request.urlopen
+quick_mod._openrouter_key = lambda: "k"
+quick_mod.urllib.request.urlopen = lambda *a, **k: _R()
+quick_mod.complete("x", {})
+quick_mod._openrouter_key = _real_key
+quick_mod.urllib.request.urlopen = _real_open
+td = ledger_mod.current.totals().get("details", {})
+check("an OpenRouter call records the cost OpenRouter reported",
+      abs(td.get("cost", 0) - 0.00003) < 1e-12, str(td))
+
+ag._ledger = ledger_mod.current
+uv = ag._usage_view()
+check("the window's cost includes what the agent did NOT spend itself",
+      abs(uv.get("cost", 0) - (0.12 + 0.00003)) < 1e-9, str(uv.get("cost")))
+ag._ledger = None
+ledger_mod.current = None
+
+# --------------------------------------------------------------------------
+print("\na run cut short can be resumed without redoing its items")
+# --------------------------------------------------------------------------
+from core import checkpoint as ck                             # noqa: E402
+
+c1 = ck.Checkpoint("weekly shop", "migros/weekly-shop", {"x": "1"})
+c1.item("süt", True)
+c1.item("peynir", False)
+c1.item("yumurta", True)
+un = {d["id"]: d for d in ck.unfinished()}
+check("a run in progress is on record with what it finished",
+      c1.id in un and un[c1.id]["done"] == ["süt", "yumurta"]
+      and un[c1.id]["failed"] == ["peynir"])
+check("one the app did not close cleanly shows as interrupted",
+      un[c1.id]["status"] == "interrupted")
+c1.finish("stopped")
+check("a stopped run is kept, marked stopped",
+      ck.load(c1.id)["status"] == "stopped")
+c2 = ck.Checkpoint("t", "s", {})
+c2.finish("done")
+check("a run that finished is forgotten", ck.load(c2.id) is None)
+
+seen_exec = {}
+er = engine.ScriptEngine({}, say, client=FakeClient())
+er.execute = lambda n, a, t="", **kw: (seen_exec.update(kw),
+                                       FakeRunner(ok_rep))[1]
+out = er.handle("Resume", forced=("migros/weekly-shop", {"x": "1"},
+                                  ["süt", "yumurta"], c1.id))
+check("resume runs the same script, skipping the items already done",
+      out.kind == "done" and seen_exec.get("skip") == ["süt", "yumurta"]
+      and seen_exec.get("run_id") == c1.id, str(seen_exec))
+
+started = {}
+real_run_task = ag.run_task
+ag.run_task = lambda text: (started.update(text=text), {"ok": True})[1]
+r = ag.resume_run(c1.id)
+check("Resume in the window routes to that script with the done items",
+      r["ok"] and ag._forced[0] == "migros/weekly-shop"
+      and ag._forced[2] == ["süt", "yumurta"] and ag._forced[3] == c1.id
+      and started["text"].startswith("Resume:"), str(ag._forced))
+ag._forced = None
+ag.run_task = real_run_task
+check("the window lists it until dismissed",
+      any(u["id"] == c1.id for u in ag._unfinished()))
+check("Dismiss forgets it", ag.dismiss_run(c1.id)["ok"]
+      and not any(u["id"] == c1.id for u in ag._unfinished()))
+
+
+# --------------------------------------------------------------------------
+print("\nJev hesitates: a quick second opinion, not a new script")
+# --------------------------------------------------------------------------
+class _Ans:
+    def __init__(self, ranked):
+        self.ranked = ranked
+
+
+eh = engine.ScriptEngine({}, say, client=FakeClient())
+fast.rerank = lambda task, cands, at=0.6, client=None: (
+    None, fast.Verdict(False, "confidence 0.22 < 0.60",
+                       _Ans([("1", 0.22), ("0", 0.2), ("none", 0.1)])))
+asked_opts = {}
+eh._claude_choose = lambda goal, reject, opts, model="": (
+    asked_opts.update(opts), "0")[1]
+nm, why = eh.recognise("not defterine 'x' yaz")
+rows_now = engine.listed_rows(bridge.library())
+check("a hesitant Jev pick is confirmed by the quick check, not dropped",
+      nm is not None and "quick check" in why and "none" in asked_opts, why)
+fast.rerank = lambda task, cands, at=0.6, client=None: (
+    None, fast.Verdict(False, "no saved job matches",
+                       _Ans([("none", 0.9), ("0", 0.1)])))
+asked_opts.clear()
+nm2, _ = eh.recognise("what is the weather")
+check("Jev saying 'none of these' is trusted - no second opinion",
+      nm2 is None and not asked_opts)
+fast.rerank = real_rerank
+
+authoring._claude = fake_claude
+replies[:] = ['{"use": "migros/weekly-shop"}']
+before_n = len(bridge.library(fresh=True).local())
+nm3, why3 = authoring.author("haftalık alışveriş", bridge.library(), {})
+check("Claude may point at an existing script instead of writing a copy",
+      nm3 == "migros/weekly-shop" and authoring.reused
+      and len(bridge.library(fresh=True).local()) == before_n, why3)
+authoring._claude = real_claude
 
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)

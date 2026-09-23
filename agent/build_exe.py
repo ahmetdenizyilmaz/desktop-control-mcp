@@ -70,7 +70,8 @@ HIDDEN = [
     "vision", "vision.elements", "vision.capture", "vision.ocr",
     "vision.query", "vision.templates", "cursor", "winocr", "numpy",
     "core.engine", "core.keys", "core.pipeline_bridge", "core.progress",
-    "core.waiting", "core.cancel_watch", "core.authoring",
+    "core.waiting", "core.cancel_watch", "core.authoring", "core.ledger",
+    "core.checkpoint", "core.quick",
 ]
 
 PIPELINE = REPO / "pipeline"

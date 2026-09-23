@@ -276,6 +276,11 @@ class Step:
     #: repeat
     times: int = 0
     for_each: tuple[str, ...] = ()
+    #: `for_each: "{products}"` - the list comes from a parameter, split on
+    #: new lines, ";" or ",". The one place a parameter holds a LIST: "buy
+    #: süt, ekmek, peynir" becomes one script run over three items instead
+    #: of a new script per shopping list.
+    for_each_param: str = ""
     as_name: str = ""
     steps: list["Step"] = field(default_factory=list)
     #: call
@@ -517,7 +522,17 @@ def _step(raw: Any, where: str) -> Step:
     if do == "repeat":
         each = raw.get("for_each")
         s.times = int(raw.get("times", 0) or 0)
-        if each is not None:
+        if isinstance(each, str):
+            m = PARAM.fullmatch(each.strip())
+            if not m:
+                raise ScriptError(f"{where}: for_each as text must be exactly "
+                                  f"one parameter, like \"{{products}}\"")
+            s.for_each_param = m.group(1)
+            s.as_name = str(raw.get("as", "item"))
+            if not PARAM.fullmatch("{" + s.as_name + "}"):
+                raise ScriptError(f"{where}: as={s.as_name!r} is not a valid "
+                                  f"name")
+        elif each is not None:
             if not isinstance(each, list) or not each:
                 raise ScriptError(f"{where}: for_each must be a non-empty "
                                   f"list of strings — a query is not allowed, "
@@ -651,6 +666,10 @@ def used_params(step: Step) -> set[str]:
         for s in (sel.text, sel.near, sel.icon, sel.id, *sel.any):
             out |= {m.group(1) for m in PARAM.finditer(s)}
     for v in step.with_args.values():
+        out |= {m.group(1) for m in PARAM.finditer(v)}
+    if step.for_each_param:
+        out.add(step.for_each_param)
+    for v in step.for_each:
         out |= {m.group(1) for m in PARAM.finditer(v)}
     if step.pick is not None:
         for t in (step.pick.goal, step.pick.reject):

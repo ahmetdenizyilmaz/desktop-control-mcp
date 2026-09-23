@@ -31,7 +31,8 @@ def _openrouter_key() -> str:
 
 def complete(prompt: str, settings: dict | None = None,
              cli_model: str = "haiku", env: dict | None = None,
-             max_tokens: int = 300, timeout: float = 25.0) -> tuple[str, str]:
+             max_tokens: int = 300, timeout: float = 25.0,
+             kind: str = "details") -> tuple[str, str]:
     """(answer text, how) - how is 'openrouter <ms>' or 'cli <ms>'."""
     settings = settings or {}
     key = _openrouter_key()
@@ -40,7 +41,10 @@ def complete(prompt: str, settings: dict | None = None,
         body = json.dumps({
             "model": settings.get("quick_model") or DEFAULT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens, "temperature": 0}).encode()
+            "max_tokens": max_tokens, "temperature": 0,
+            # Ask OpenRouter to put what this call cost in the reply, so
+            # the task's ledger shows a real number, not a guess.
+            "usage": {"include": True}}).encode()
         req = urllib.request.Request(
             OPENROUTER_CHAT, data=body,
             headers={"Authorization": f"Bearer {key}",
@@ -50,10 +54,14 @@ def complete(prompt: str, settings: dict | None = None,
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 out = json.load(r)
             text = out["choices"][0]["message"]["content"] or ""
+            from . import ledger
+            ledger.record(kind, time.time() - t0,
+                          (out.get("usage") or {}).get("cost"),
+                          f"openrouter {out.get('model', '')}")
             return text, f"openrouter {int((time.time() - t0) * 1000)} ms"
         except Exception:
             pass                               # fall through to the CLI
     from .authoring import _claude
     t0 = time.time()
-    text = _claude(prompt, cli_model, 120, env)
+    text = _claude(prompt, cli_model, 120, env, kind=kind)
     return text, f"cli {int((time.time() - t0) * 1000)} ms"

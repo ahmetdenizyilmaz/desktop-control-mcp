@@ -485,6 +485,9 @@ def step_json(step: Step) -> dict:
         out["else"] = [step_json(s) for s in step.otherwise]
     if step.times:
         out["times"] = step.times
+    if step.for_each_param:
+        out["for_each"] = "{" + step.for_each_param + "}"
+        out["as"] = step.as_name
     if step.for_each:
         out["for_each"] = list(step.for_each)
         out["as"] = step.as_name

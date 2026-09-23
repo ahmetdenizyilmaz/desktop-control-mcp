@@ -73,6 +73,11 @@ class OpusHelper:
         self.env = dict(env or {})
         #: The last screenshot sent, for a takeover prompt to point at.
         self.last_shot: "Path | None" = None
+        #: Told (seconds, cost_usd or None) after every call - a host keeps
+        #: the task's bill with it. The CLI reports what each call cost.
+        self.on_cost = None
+        self.spent_s = 0.0
+        self.spent_usd = 0.0
 
     def _screenshot(self) -> Path | None:
         try:
@@ -128,6 +133,14 @@ class OpusHelper:
                 env=({**os.environ, **self.env} if self.env else None))
             outer = json.loads(proc.stdout or "{}")
             text = outer.get("result", "") or ""
+            cost = outer.get("total_cost_usd")
+            self.spent_s += time.time() - t0
+            self.spent_usd += float(cost or 0)
+            if self.on_cost is not None:
+                try:
+                    self.on_cost(time.time() - t0, cost)
+                except Exception:
+                    pass
         except Exception as exc:
             self.log(f"    [opus] failed: {exc}")
             return {"done": False, "why": f"helper error: {exc}", "steps": []}
