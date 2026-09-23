@@ -92,3 +92,7 @@ pipeline/.stuck/
 # Fetched remote scripts, deleted scripts.
 pipeline/script/.cache/
 pipeline/script/scripts/.trash/
+# Old versions of scripts Claude patched, and the packaged self-test result.
+pipeline/script/scripts/.history/
+agent/selftest.json
+agent/logs/
