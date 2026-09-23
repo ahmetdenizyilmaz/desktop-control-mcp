@@ -226,9 +226,6 @@ class ScriptEngine:
         # Asked even when every parameter has a default: a script Claude
         # wrote for "type 'merhaba dünya'" keeps that text as the default,
         # and "type 'test iki'" must not quietly type the old one.
-        exe = shutil.which("claude")
-        if not exe:
-            return None
         prompt = (
             "Fill the parameters of a saved automation script from a task.\n"
             f"TASK: {task}\n"
@@ -243,18 +240,13 @@ class ScriptEngine:
             "(open, play, start, aç, çal, başlat): 'spotify aç' gives no "
             "query, so query is null.")
         try:
-            import os
-            p = subprocess.run(
-                [exe, "-p", "--model",
-                 self.settings.get("param_model") or "haiku",
-                 "--output-format", "json"],
-                input=prompt, capture_output=True, text=True,
-                encoding="utf-8", timeout=90,
-                env={**os.environ, **self.provider_env},
-                creationflags=0x08000000)
-            text = json.loads(p.stdout or "{}").get("result", "")
-            from script.helper import _first_json
-            got = _first_json(text)
+            from . import quick
+            from .authoring import _first_object
+            text, _how = quick.complete(
+                prompt, self.settings,
+                cli_model=self.settings.get("param_model") or "haiku",
+                env=self.provider_env)
+            got = _first_object(text)
         except Exception:
             return None
         out = {}
@@ -464,14 +456,17 @@ class ScriptEngine:
     def _claude_choose(self, goal, reject, options, model: str = "") -> str:
         try:
             from .authoring import _claude, _first_object
-            text = _claude(
-                "Pick the ONE option that fits. Goal: " + goal
-                + (f" Reject: {reject}." if reject else "")
-                + "\nOptions:\n" + "\n".join(f"{k}: {v}" for k, v in
-                                             options.items())
-                + '\nReply with only {"choice": "<key>"}.',
-                model or self.settings.get("param_model") or "haiku", 120,
-                self.provider_env)
+            ask = ("Pick the ONE option that fits. Goal: " + goal
+                   + (f" Reject: {reject}." if reject else "")
+                   + "\nOptions:\n" + "\n".join(f"{k}: {v}" for k, v in
+                                                options.items())
+                   + '\nReply with only {"choice": "<key>"}.')
+            if model:                     # the decider: a model you chose
+                text = _claude(ask, model, 120, self.provider_env)
+            else:                         # a tie-break: the fast path
+                from . import quick
+                text, _how = quick.complete(ask, self.settings,
+                                            env=self.provider_env)
             k = str(_first_object(text).get("choice", ""))
             return k if k in options else ""
         except Exception:
@@ -527,7 +522,9 @@ class ScriptEngine:
             from script.helper import OpusHelper
             from vision.elements import Watcher
             helper = None
-            if self.settings.get("claude_rescue", True):
+            tries = self.settings.get("rescue_tries", 2)
+            tries = 2 if tries is None else int(tries)
+            if self.settings.get("claude_rescue", True) and tries > 0:
                 helper = OpusHelper(
                     model=self.settings.get("rescue_model") or "opus",
                     budget=int(self.settings.get("rescue_budget") or 12),
@@ -543,7 +540,7 @@ class ScriptEngine:
                 chooser=self._chooser(),
                 cursor=_CursorProxy(), helper=helper,
                 honour_trust=(level == "auto"),
-                rescue_tries=int(self.settings.get("rescue_tries") or 2),
+                rescue_tries=max(1, tries),
                 hooks=self._hooks())
             holder["runner"] = runner
             runner.run(args)

@@ -134,3 +134,46 @@ def test_claude(settings: dict, env: dict | None = None) -> dict:
     return {"ok": "OK" in str(out.get("result", "")), "model": model,
             "latency_ms": int((time.time() - t0) * 1000),
             "cost_usd": out.get("total_cost_usd"), "at": time.time()}
+
+
+def _get_json(url: str, headers: dict, timeout: float = 15.0) -> dict:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "AGIAgent",
+                                               **headers})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def test_openrouter() -> dict:
+    """Is the OpenRouter key valid, and how much of its limit is left?"""
+    key = _secret(OPENROUTER_KEY)
+    if not key:
+        return {"ok": False, "error": "no OpenRouter key saved"}
+    t0 = time.time()
+    try:
+        d = _get_json("https://openrouter.ai/api/v1/key",
+                      {"Authorization": f"Bearer {key}"}).get("data", {})
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
+    limit, used = d.get("limit"), d.get("usage")
+    return {"ok": True, "latency_ms": int((time.time() - t0) * 1000),
+            "limit": limit, "usage": used,
+            "left": (round(limit - used, 2)
+                     if isinstance(limit, (int, float))
+                     and isinstance(used, (int, float)) else None),
+            "at": time.time()}
+
+
+def test_gemini() -> dict:
+    key = _secret("gemini-api-key")
+    if not key:
+        return {"ok": False, "error": "no Gemini key saved"}
+    t0 = time.time()
+    try:
+        d = _get_json("https://generativelanguage.googleapis.com/v1beta/"
+                      f"models?key={key}", {})
+    except Exception as e:
+        msg = str(e).replace(key, "***")
+        return {"ok": False, "error": f"{type(e).__name__}: {msg}"[:200]}
+    return {"ok": True, "latency_ms": int((time.time() - t0) * 1000),
+            "models": len(d.get("models", [])), "at": time.time()}

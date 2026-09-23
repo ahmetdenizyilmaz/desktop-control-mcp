@@ -122,17 +122,107 @@ DEFAULTS = {
     # after this long, pause the task after the second.
     "remind_after_minutes": 5,
     "wait_limit_minutes": 60,
+    # Who makes the quick decisions - which saved script fits a task, which
+    # product to pick: "jev" (~0.4 s, a fraction of a cent) or "claude"
+    # (decider_model; seconds, far dearer, no Jev key needed).
+    "decider": "jev",
+    "decider_model": "claude-opus-5-5",
+    # Claude writes a new script with this model.
+    "author_model": "opus",
+    # Pulling a task's details (a song, a text) into a script's parameters:
+    # a small model over the OpenRouter key (~1 s); the CLI model if none.
+    "param_model": "haiku",
+    "quick_model": "anthropic/claude-haiku-4.5",
+    "settings_version": 2,
 }
+
+#: What each setting may hold. `update_settings` refuses anything else, so
+#: an instant-save control, a stale window or a hand-edited file cannot put a
+#: negative timeout or a typo'd provider into the running app.
+#:   ("bool",) ("int", lo, hi) ("float", lo, hi) ("choice", [...]) ("str", maxlen)
+SETTINGS_SCHEMA: dict[str, tuple] = {
+    "automation_level": ("choice", ["supervised", "auto"]),
+    "model": ("str", 120), "fallback_model": ("str", 120),
+    "provider": ("choice", ["anthropic", "openrouter", "gemini", "custom"]),
+    "base_url": ("str", 300),
+    "max_output_tokens": ("int", 0, 128000),
+    "screenshot_detail": ("choice", ["low", "standard", "high"]),
+    "watchdog_minutes": ("int", 1, 600), "stall_minutes": ("int", 1, 240),
+    "browser_headless": ("bool",), "max_turns": ("int", 0, 2000),
+    "scripts_first": ("bool",), "author_scripts": ("bool",),
+    "jev_backend": ("choice", ["openrouter", "typesafe", "cloudflare"]),
+    "jev_min_confidence": ("float", 0.3, 0.99),
+    "rescue_tries": ("int", 0, 5), "rescue_model": ("str", 120),
+    "decider": ("choice", ["jev", "claude"]), "decider_model": ("str", 120),
+    "author_model": ("str", 120), "param_model": ("str", 120),
+    "quick_model": ("str", 120),
+    "no_change_seconds": ("float", 3, 120),
+    "busy_grace_seconds": ("float", 0, 300),
+    "remind_after_minutes": ("float", 0.5, 1440),
+    "wait_limit_minutes": ("float", 1, 1440),
+}
+
+
+def _clean_value(key: str, value):
+    """(ok, cleaned value or reason) for one setting."""
+    spec = SETTINGS_SCHEMA.get(key)
+    if spec is None:
+        return False, f"unknown setting {key!r}"
+    kind = spec[0]
+    try:
+        if kind == "bool":
+            if isinstance(value, str):
+                return True, value.strip().lower() in ("1", "true", "yes", "on")
+            return True, bool(value)
+        if kind in ("int", "float"):
+            v = float(value)
+            if v != v:                           # NaN
+                raise ValueError
+            v = min(max(v, spec[1]), spec[2])    # clamp, never refuse a typo
+            return True, int(round(v)) if kind == "int" else round(v, 3)
+        if kind == "choice":
+            v = str(value)
+            return (True, v) if v in spec[1] else (False, f"{key} must be one "
+                                                   f"of {spec[1]}")
+        v = str(value if value is not None else "").strip()
+        return True, v[:spec[1]]
+    except (TypeError, ValueError):
+        return False, f"{key}: {value!r} is not a {kind}"
+
+
+def _migrate(s: dict) -> dict:
+    """Bring an older settings file up to date - once, and in place."""
+    if int(s.get("settings_version") or 1) >= 2:
+        return s
+    for k in SETTINGS_SCHEMA:
+        if k in s:
+            ok, v = _clean_value(k, s[k])
+            s[k] = v if ok else DEFAULTS.get(k)
+    s["settings_version"] = 2
+    try:
+        save_settings(s)
+    except Exception:
+        pass
+    return s
 
 
 def load_settings() -> dict:
     s = dict(DEFAULTS)
+    saved = {}
     if SETTINGS_FILE.exists():
         try:
-            s.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
+            saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
         except Exception:
-            pass
-    return s
+            # Keep the broken file for the person to look at, rather than
+            # silently overwrite what they had with defaults on next save.
+            try:
+                SETTINGS_FILE.replace(SETTINGS_FILE.with_suffix(".broken.json"))
+            except Exception:
+                pass
+    s.update(saved)
+    if "settings_version" not in saved:
+        s["settings_version"] = 1 if saved else 2
+    return _migrate(s)
 
 
 def save_settings(s: dict) -> None:
@@ -471,6 +561,9 @@ class Agent:
         self._answered = threading.Event()
         self._answer: "chan.Reply | None" = None
         chan.channel.app_ask = self._ask_in_app
+        # "Keep going when stuck": the watchdog noticed and nothing listened.
+        watchdog.on_nudge = self._on_stall
+        watchdog.on_escalate = self._on_stall_escalated
 
         # The loop and task the SDK runs on, so Stop can reach the run from
         # the outside instead of waiting for the next message to notice it.
@@ -986,7 +1079,8 @@ class Agent:
             return out
         if provider != "openrouter":
             return [{"id": "", "name": "Default — whatever Claude Code is set to"},
-                    {"id": "claude-opus-5", "name": "Opus 5 — most capable"},
+                    {"id": "claude-opus-5-5", "name": "Opus 5.5 — most capable"},
+                    {"id": "claude-opus-5", "name": "Opus 5"},
                     {"id": "claude-fable-5-1", "name": "Fable 5.1"},
                     {"id": "claude-sonnet-5", "name": "Sonnet 5 — faster, cheaper"},
                     {"id": "claude-haiku-4-5-20251001", "name": "Haiku 4.5 — fastest"}]
@@ -1100,10 +1194,39 @@ class Agent:
         self._key_tests["jev"] = r
         return r
 
-    def test_claude(self) -> dict:
+    def test_openrouter(self) -> dict:
         from core import keys
-        r = keys.test_claude(self.settings)
+        r = keys.test_openrouter()
+        self._key_tests["openrouter"] = r
+        return r
+
+    def test_gemini(self) -> dict:
+        from core import keys
+        r = keys.test_gemini()
+        self._key_tests["gemini"] = r
+        return r
+
+    def test_claude(self) -> dict:
+        """The agent's model, through the agent's provider - so a pass means
+        a task would actually run, not just that some Claude answers."""
+        from core import keys
+        model = self.settings.get("model") or "opus"
+        r = keys.test_claude({"rescue_model": model},
+                             env=_provider_env(self.settings))
         self._key_tests["claude"] = r
+        return r
+
+    def test_decider(self) -> dict:
+        """Whichever decider is selected: one real decision, timed."""
+        from core import keys
+        if (self.settings.get("decider") or "jev") == "claude":
+            r = keys.test_claude({"rescue_model":
+                                  self.settings.get("decider_model")
+                                  or "claude-opus-5-5"})
+        else:
+            r = keys.test_jev(self.settings)
+        r["decider"] = self.settings.get("decider") or "jev"
+        self._key_tests["decider"] = r
         return r
 
     # -- the Scripts tab --------------------------------------------------
@@ -1122,9 +1245,17 @@ class Agent:
             stats = {}
         jev_names = {r["name"] for r in listed_rows(lib)}
         groups: dict[str, list] = {}
+        blocks: list = []
         for name, sc in sorted(lib.local().items()):
             st = stats.get(name, {})
-            groups.setdefault(name.split("/")[0], []).append({
+            # What a person asks for comes first, by site. Building blocks
+            # other scripts call (browser/goto...) go last, together: they
+            # buried the real scripts at the top of the list.
+            is_block = (name not in jev_names
+                        and not sc.extra.get("authored_by")
+                        and sc.extra.get("listed") is not False)
+            (blocks if is_block else
+             groups.setdefault(name.split("/")[0], [])).append({
                 "name": name, "description": sc.description,
                 "params": dict(sc.params), "trust": sc.trust.value,
                 "version": sc.version, "steps": len(sc.steps),
@@ -1135,9 +1266,11 @@ class Agent:
                 "note": sc.extra.get("note", ""),
                 "runs": st.get("runs", 0), "ok_runs": st.get("ok", 0),
                 "last": st.get("last"), "last_ok": st.get("last_ok")})
-        return {"groups": [{"site": k, "scripts": v}
-                           for k, v in sorted(groups.items())],
-                "errors": list(lib.errors)}
+        out = [{"site": k, "scripts": v} for k, v in sorted(groups.items())]
+        if blocks:
+            out.append({"site": "building blocks — used by other scripts",
+                        "scripts": blocks})
+        return {"groups": out, "errors": list(lib.errors)}
 
     def get_script(self, name: str) -> dict:
         """The script as JSON, plus one readable line per step."""
@@ -1290,8 +1423,20 @@ class Agent:
         return {"ok": ok, "error": "" if ok else "not paired yet"}
 
     def update_settings(self, patch: dict) -> dict:
-        self.settings.update(patch or {})
+        """Apply a change - one control at a time is the normal case, since
+        Settings saves as you go. Unknown keys and bad values are refused
+        (and listed), never stored."""
+        clean, refused = {}, []
+        for k, v in (patch or {}).items():
+            ok, got = _clean_value(k, v)
+            if ok:
+                clean[k] = got
+            else:
+                refused.append(got)
+        self.settings.update(clean)
         save_settings(self.settings)
+        if refused:
+            self._say("system", "Settings not saved: " + "; ".join(refused))
         browser.headless = bool(self.settings.get("browser_headless", True))
         watchdog.check_every_s = float(self.settings.get("watchdog_minutes", 60)) * 60
         watchdog.stall_after_s = float(self.settings.get("stall_minutes", 10)) * 60
@@ -1513,7 +1658,7 @@ class Agent:
             from core.engine import ScriptEngine
             eng = ScriptEngine(
                 self.settings, self._say,
-                set_status=lambda st: setattr(self, "_engine_status", st),
+                set_status=self._engine_status_changed,
                 set_current=self._set_current_tool,
                 cancel_watch=self._cancel_watch)
             self._engine = eng
@@ -1524,11 +1669,51 @@ class Agent:
                                 f"{e}) — handing the task to Claude.")
             return None
 
+    def _waiting_on_person(self) -> bool:
+        cur = (self._current or {}).get("tool", "")
+        return (self._question is not None or cur in _WAIT_TOOLS
+                or (self._engine_status or {}).get("state") in
+                ("waiting", "asking"))
+
+    def _on_stall(self, p) -> None:
+        """No progress for stall_minutes. Waiting for YOU is not a stall."""
+        if not self.running or self._waiting_on_person() \
+                or tools_sdk.is_paused():
+            watchdog.beat(self._task_id, "waiting on a person")
+            return
+        msg = (f"No progress for {p.idle_s / 60:.0f} min on: "
+               f"{self.current_task[:80]}. Still working on it — press Stop "
+               f"if it looks stuck.")
+        self._say("system", msg)
+        try:
+            chan.channel.notify(msg)
+        except Exception:
+            pass
+
+    def _on_stall_escalated(self, p) -> None:
+        if not self.running or self._waiting_on_person():
+            watchdog.beat(self._task_id, "waiting on a person")
+            return
+        msg = (f"Still no progress after {p.nudges} checks "
+               f"({p.idle_s / 60:.0f} min): {self.current_task[:80]}. It needs "
+               f"you — stop it, or tell it what to do.")
+        self._say("error", msg)
+        try:
+            chan.channel.notify(msg)
+        except Exception:
+            pass
+
     def _remote_cancel(self, reason: str) -> None:
         """A 'cancel' from outside the machine: same as pressing Stop."""
         if self.running and not self._cancel.is_set():
             self._say("system", f"Cancelled — {reason}.")
             self.stop_task()
+
+    def _engine_status_changed(self, st: dict) -> None:
+        self._engine_status = st
+        # A script making progress is progress - without this the watchdog
+        # saw a silent task during every script run.
+        watchdog.beat(self._task_id, st.get("detail") or st.get("state", ""))
 
     def _set_current_tool(self, cur: dict | None) -> None:
         self._current = cur

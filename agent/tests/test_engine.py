@@ -133,7 +133,7 @@ def boom(*a, **k):
 
 
 fast.rerank = boom
-name, why = eng.recognise("anything")
+name, why = eng.recognise("do the migros weekly shop")
 check("a Jev failure falls through to Claude instead of crashing",
       name is None and "network down" in why, why)
 fast.rerank = real_rerank
@@ -490,24 +490,24 @@ def fake_claude(prompt, model, timeout, env):
 
 
 authoring._claude = fake_claude
-replies[:] = ['{"script": {"name": "notepad/write-text", "description": '
+replies[:] = ['{"script": {"name": "testpad/write-text", "description": '
               '"Open Notepad and type text", "params": {"text": ""}, '
               '"trust": "trusted", "steps": [{"do": "open", "app": "notepad", '
               '"window": "Notepad"}, {"do": "type", "value": "{text}"}]}}']
 name, why = authoring.author("notepad'a merhaba yaz", tlib, {})
 got = tlib.local().get(name or "")
 check("Claude's script is validated and saved under its site folder",
-      name == "notepad/write-text" and got is not None
-      and (bridge.scripts_root() / "notepad" / "write-text.json").exists(),
+      name == "testpad/write-text" and got is not None
+      and (bridge.scripts_root() / "testpad" / "write-text.json").exists(),
       why)
 check("…as a DRAFT, whatever it claimed, and marked unverified",
       got.trust.value == "draft" and got.extra.get("verified") is False
       and got.extra.get("source_task") == "notepad'a merhaba yaz")
-replies[:] = ['{"script": {"name": "notepad/write-text", "steps": '
+replies[:] = ['{"script": {"name": "testpad/write-text", "steps": '
               '[{"do": "wait", "seconds": 0}]}}']
 name2, _ = authoring.author("again", tlib, {})
 check("a name already taken gets -2, never overwrites",
-      name2 == "notepad/write-text-2", str(name2))
+      name2 == "testpad/write-text-2", str(name2))
 replies[:] = ['{"script": {"name": "Bad Name", "steps": []}}',
               '{"script": {"name": "calc/add", "steps": [{"do": "call", '
               '"script": "does/not-exist"}]}}']
@@ -566,9 +566,9 @@ ag = appmod.Agent()
 ls = ag.list_scripts()
 sites = {g["site"] for g in ls["groups"]}
 check("scripts are grouped by site/app",
-      {"migros", "media", "notepad", "t"} <= sites, str(sorted(sites)))
+      {"migros", "media", "testpad", "t"} <= sites, str(sorted(sites)))
 card = next(s for g in ls["groups"] for s in g["scripts"]
-            if s["name"] == "notepad/write-text")
+            if s["name"] == "testpad/write-text")
 check("a card says who wrote it, trust, and whether Jev can pick it",
       card["authored"] and card["trust"] == "draft" and card["jev"]
       and card["verified"] is False, str(card))
@@ -576,23 +576,90 @@ gs = ag.get_script("migros/weekly-shop")
 check("Steps shows one readable line per step",
       gs["ok"] and any("migros/add-product" in l for l in gs["lines"]),
       str(gs.get("lines", [])[:3]))
-check("trust can be raised", ag.set_script_trust("notepad/write-text",
+check("trust can be raised", ag.set_script_trust("testpad/write-text",
                                                  "trusted")["ok"]
-      and bridge.library().local()["notepad/write-text"].trust.value
+      and bridge.library().local()["testpad/write-text"].trust.value
       == "trusted")
 check("a script can be hidden from Jev",
-      ag.set_script_listed("notepad/write-text", False)["ok"]
+      ag.set_script_listed("testpad/write-text", False)["ok"]
       and not any(s["jev"] for g in ag.list_scripts()["groups"]
-                  for s in g["scripts"] if s["name"] == "notepad/write-text"))
+                  for s in g["scripts"] if s["name"] == "testpad/write-text"))
 check("params save as defaults; an unknown one is refused",
-      ag.save_script_params("notepad/write-text", {"text": "hi"})["ok"]
-      and not ag.save_script_params("notepad/write-text", {"x": 1})["ok"])
+      ag.save_script_params("testpad/write-text", {"text": "hi"})["ok"]
+      and not ag.save_script_params("testpad/write-text", {"x": 1})["ok"])
 check("running a script with a missing required value is refused up front",
       not ag.run_script("migros/add-product", {})["ok"])
-d = ag.delete_script("notepad/write-text-2")
+d = ag.delete_script("testpad/write-text-2")
 check("delete moves it to the trash",
       d["ok"] and ".trash" in d["moved_to"]
-      and "notepad/write-text-2" not in bridge.library(fresh=True).local())
+      and "testpad/write-text-2" not in bridge.library(fresh=True).local())
+
+
+# --------------------------------------------------------------------------
+print("\nsettings save instantly, and only what makes sense")
+# --------------------------------------------------------------------------
+import re as _re                                              # noqa: E402
+
+r = ag.update_settings({"no_change_seconds": -5})
+check("a value out of range is clamped, not stored as-is",
+      ag.settings["no_change_seconds"] == 3)
+r = ag.update_settings({"provider": "bogus"})
+check("a bad choice is refused and the old value kept",
+      ag.settings["provider"] != "bogus")
+r = ag.update_settings({"not_a_setting": 1, "decider": "claude"})
+check("an unknown key is refused; the valid one in the same patch is saved",
+      "not_a_setting" not in ag.settings and ag.settings["decider"] == "claude")
+ag.update_settings({"decider": "jev"})
+saved = json.loads(appmod.SETTINGS_FILE.read_text(encoding="utf-8"))
+check("each change is on disk immediately (no Save button)",
+      saved["decider"] == "jev" and saved["no_change_seconds"] == 3)
+
+old = {"automation_level": "auto", "stall_minutes": -1, "provider": "custom",
+       "max_output_tokens": "2000"}
+appmod.SETTINGS_FILE.write_text(json.dumps(old), encoding="utf-8")
+mig = appmod.load_settings()
+check("an old settings file is migrated: version set, values cleaned",
+      mig["settings_version"] == 2 and mig["stall_minutes"] == 1
+      and mig["max_output_tokens"] == 2000 and mig["provider"] == "custom"
+      and mig["automation_level"] == "auto")
+check("…and new settings get their defaults",
+      mig["decider"] == "jev" and mig["scripts_first"] is True)
+appmod.SETTINGS_FILE.write_text("{broken", encoding="utf-8")
+bad = appmod.load_settings()
+check("a corrupt settings file is kept aside, not silently lost",
+      appmod.SETTINGS_FILE.with_suffix(".broken.json").exists()
+      and bad["decider"] == "jev")
+
+keys.save_jev_key("typesafe", "ts-secret-XYZ")
+state_text = json.dumps(ag.get_state(), default=str)
+check("the window state never carries a key value",
+      "ts-secret-XYZ" not in state_text)
+keys.save_jev_key("typesafe", "")
+
+re0 = engine.ScriptEngine({"rescue_tries": 0}, say, client=FakeClient())
+check("rescue tries 0 means no rescue (not 'or 2')",
+      (lambda t: 2 if t is None else int(t))(re0.settings.get("rescue_tries", 2))
+      == 0)
+
+# --------------------------------------------------------------------------
+print("\nthe window's code only calls what exists")
+# --------------------------------------------------------------------------
+html = (Path(appmod.__file__).parent / "ui" / "app.html").read_text(
+    encoding="utf-8")
+ids = set(_re.findall(r'id="([^"$]+)"', html))
+used = set(_re.findall(r'getElementById\("([^"]+)"\)', html))
+check("every getElementById names an element that exists",
+      used <= ids, str(sorted(used - ids)))
+methods = {n for n in dir(appmod.Agent) if not n.startswith("__")}
+calls = set(_re.findall(r'api\(\)\.(\w+)\(', html))
+check("every api() call is a method of the app", calls <= methods,
+      str(sorted(calls - methods)))
+data_keys = set(_re.findall(r'data-key="([a-z_]+)"', html))
+check("every instant-save control maps to a known setting",
+      data_keys <= set(appmod.SETTINGS_SCHEMA),
+      str(sorted(data_keys - set(appmod.SETTINGS_SCHEMA))))
+dup = [i for i in ids if html.count(f'id="{i}"') > 1]
+check("no element id is used twice", not dup, str(dup))
 
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)

@@ -520,7 +520,8 @@ class Runner:
             if got is None:
                 raise StepFailed(
                     f"acted, but {self._sel(step.expect, values, where).describe()} "
-                    f"never appeared — so the action did not take effect")
+                    f"never appeared — so the action did not take effect"
+                    f"{getattr(self, '_gave_up', '')}")
         if step.gone is not None:
             if self._await(self._sel(step.gone, values, where),
                            step.timeout, present=False) is False:
@@ -798,7 +799,10 @@ class Runner:
                 if not present and not res.matches:
                     return True
             verdict = self.hooks.patience(time.time() - t0, timeout)
+            self._gave_up = ""
             if verdict == "fail":
+                self._gave_up = (f" (gave up after {time.time() - t0:.0f}s: "
+                                 f"the screen stopped changing)")
                 # The host saw a dead-still screen: whatever this waits for
                 # is not coming, and waiting out the full timeout would only
                 # delay the rescue.
@@ -1086,6 +1090,9 @@ class Runner:
         sel = self._sel(step.target, values, where)
         got = self._await(sel, step.timeout, present=True)
         if got is None:
+            if getattr(self, "_gave_up", ""):
+                raise StepFailed(f"{sel.describe()} did not appear"
+                                 f"{self._gave_up}")
             raise StepFailed(f"{sel.describe()} did not appear within "
                              f"{step.timeout}s")
         return f"{sel.describe()} appeared"

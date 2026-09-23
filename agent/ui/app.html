@@ -106,6 +106,19 @@ h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3
 .card h3{margin:0 0 5px;font-size:14px;font-weight:600}
 .card p{margin:0;color:var(--ink2);font-size:12.5px;line-height:1.5}
 .sgroup{margin:4px 0 16px}
+#pane-settings h2{margin-top:26px}
+#pane-settings h2:first-of-type{margin-top:4px}
+.engine-strip{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;
+  font-size:12.5px;color:var(--ink2)}
+.engine-strip span b{display:inline-block;width:18px;height:18px;border-radius:9px;
+  background:var(--accent);color:#07101f;text-align:center;line-height:18px;margin-right:4px}
+.dim{font-weight:400;opacity:.65}
+.saved-flash{margin-left:8px;font-weight:600}
+.saved-flash.ok{color:#7c7}.saved-flash.bad{color:var(--warn)}
+details.adv{margin:4px 0 8px;max-width:760px}
+details.adv summary{cursor:pointer;color:var(--ink2);font-size:13px;margin:6px 0 12px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:0 18px;
+  max-width:760px;margin-top:10px}
 .sgroup > h3{font-size:12px;text-transform:uppercase;letter-spacing:.08em;
   color:var(--ink3);margin:0 0 8px;font-weight:650}
 .sbadge{font-size:11px;padding:2px 7px;border-radius:9px;border:1px solid var(--line);
@@ -259,132 +272,147 @@ input::placeholder{color:var(--ink3)}
   <!-- SETTINGS -->
   <div class="pane" id="pane-settings">
     <div class="body-pad">
-      <h2>Engines</h2>
-      <p class="hint" style="margin:0 0 10px">Tried in this order:
-        <b>1 · Jev + saved scripts</b> (fast, cheap) →
-        <b>2 · Claude</b> (fixes a stuck step, or takes the task over) →
-        <b>3 · asks you</b>.</p>
-      <div class="toggle">
-        <input type="checkbox" id="eng-first">
-        <label for="eng-first">Try saved scripts with Jev before asking Claude</label>
-      </div>
-      <label class="field">
-        <span>Jev service <b id="jev-state" style="font-weight:400;opacity:.65"></b></span>
-        <select id="jev-backend">
-          <option value="openrouter">OpenRouter (shares the OpenRouter key)</option>
-          <option value="typesafe">TypeSafe</option>
-          <option value="cloudflare">Cloudflare Workers AI</option>
-        </select>
-      </label>
-      <div class="crow" style="margin:-4px 0 6px">
-        <input id="jev-key" type="password" placeholder="Jev key" style="flex:1">
-        <input id="jev-acct" placeholder="Cloudflare account id" style="flex:1" hidden>
-        <button id="jev-save">Save key</button>
-        <button id="jev-test">Test</button>
-      </div>
-      <p class="hint" style="margin:0 0 12px" id="jev-msg"></p>
-      <div class="crow" style="margin:0 0 6px;align-items:center">
-        <span style="flex:1">Claude — rescues stuck steps and takes over
-          <b id="claude-state" style="font-weight:400;opacity:.65"></b></span>
-        <button id="claude-test">Test Claude</button>
-      </div>
-      <p class="hint" style="margin:0 0 16px" id="claude-msg"></p>
+      <p class="hint" style="margin:0 0 14px">Everything here saves the moment you
+        change it <span id="saved-flash" class="saved-flash"></span></p>
 
-      <h2>Automation</h2>
-      <label class="field">
-        <span>How much should it ask before acting?</span>
-        <select id="set-level">
-          <option value="supervised">Supervised — confirm risky steps</option>
-          <option value="auto">Fully automated — never ask</option>
-        </select>
-      </label>
-      <div class="toggle">
-        <input type="checkbox" id="set-headless">
-        <label for="set-headless">Run the browser invisibly (falls back to visible when a site blocks it)</label>
+      <!-- ENGINES ---------------------------------------------------------- -->
+      <h2>Engines — tried in this order</h2>
+      <div class="engine-strip">
+        <span><b>1</b> saved scripts, picked by the decider</span><span>→</span>
+        <span><b>2</b> Claude — fixes a stuck step, writes new scripts, takes over</span><span>→</span>
+        <span><b>3</b> asks you</span>
       </div>
-      <label class="field">
-        <span>Where the model runs</span>
-        <select id="set-provider">
-          <option value="anthropic">Anthropic — your Claude subscription</option>
-          <option value="openrouter">OpenRouter — any model it offers</option>
-          <option value="gemini">Google Gemini — through the local proxy</option>
-          <option value="custom">Local / custom endpoint</option>
-        </select>
-      </label>
-      <div id="cu-box" hidden>
+
+      <div class="card">
+        <h3>Decider <span class="hint">— picks which saved script fits a task, and which product to add</span></h3>
         <label class="field">
-          <span>Endpoint URL — must speak the Anthropic API (<code>/v1/messages</code>).
-            Ollama and LM Studio speak OpenAI's format, so they need a
-            translating proxy in front, e.g. LiteLLM on
-            <code>http://localhost:4000</code>.</span>
-          <input id="set-baseurl" placeholder="http://localhost:4000">
+          <select data-key="decider" id="set-decider">
+            <option value="jev">Jev — fast (~0.4 s), a fraction of a cent</option>
+            <option value="claude">Claude — careful, seconds per decision, dearer</option>
+          </select>
         </label>
-      </div>
-      <div id="gm-box" hidden>
-        <div class="crow" style="margin:-4px 0 12px">
-          <input id="gm-key" type="password" placeholder="Gemini API key (AIza…)" style="flex:1">
-          <button id="gm-save">Save key</button>
+        <div id="decider-claude-box">
+          <label class="field"><span>Claude model for decisions</span>
+            <select data-key="decider_model" class="claude-models"></select></label>
         </div>
-        <p class="hint" style="margin:-6px 0 6px" id="gm-msg">
-          Get one at aistudio.google.com/apikey. Stored encrypted with your other
-          credentials, never in a settings file. The app runs the LiteLLM proxy
-          the key goes through — it starts it on this machine whenever a task
-          needs it and nothing is answering yet.</p>
-        <p class="hint" style="margin:0 0 12px" id="cu-proxy"></p>
+        <div id="decider-jev-box">
+          <label class="field"><span>Jev service <b id="jev-state" class="dim"></b></span>
+            <select data-key="jev_backend" id="jev-backend">
+              <option value="openrouter">OpenRouter (uses the OpenRouter key below)</option>
+              <option value="typesafe">TypeSafe</option>
+              <option value="cloudflare">Cloudflare Workers AI</option>
+            </select></label>
+          <div class="crow" style="margin:-4px 0 6px" id="jev-key-row">
+            <input id="jev-key" type="password" placeholder="Jev key" style="flex:1">
+            <input id="jev-acct" placeholder="Cloudflare account id" style="flex:1" hidden>
+            <button id="jev-save">Save key</button>
+          </div>
+          <label class="field"><span>Only run a saved script when Jev is at least this sure (0.3–0.99)</span>
+            <input type="number" data-key="jev_min_confidence" min="0.3" max="0.99" step="0.05"></label>
+        </div>
+        <div class="crow"><button id="jev-test">Test the decider</button>
+          <span class="hint" id="jev-msg"></span></div>
       </div>
-      <div id="or-box" hidden>
-        <div class="crow" style="margin:-4px 0 12px">
+
+      <div class="card">
+        <h3>Claude <b id="claude-state" class="dim"></b></h3>
+        <label class="field"><span>Model for the agent — the one that does whole tasks and takes over
+          <span class="hint" id="model-count"></span></span>
+          <select data-key="model" id="set-model"></select></label>
+        <label class="field"><span>Model for rescuing a stuck step (looks at a screenshot)</span>
+          <select data-key="rescue_model" class="claude-models"></select></label>
+        <label class="field"><span>Model for writing new scripts</span>
+          <select data-key="author_model" class="claude-models"></select></label>
+        <div class="crow"><button id="claude-test">Test Claude</button>
+          <span class="hint" id="claude-msg"></span></div>
+      </div>
+
+      <div class="card">
+        <h3>OpenRouter key <b id="or-state" class="dim"></b></h3>
+        <p>Used by Jev, and for quick one-line jobs like pulling a song name out of a task
+          (~1 s instead of ~12 s). Stored encrypted, never in a settings file.</p>
+        <div class="crow" style="margin-top:8px">
           <input id="or-key" type="password" placeholder="OpenRouter API key (sk-or-…)" style="flex:1">
           <button id="or-save">Save key</button>
+          <button id="or-test">Test</button>
         </div>
-        <p class="hint" style="margin:-6px 0 12px" id="or-msg">
-          Stored encrypted with your other credentials, never in a settings file.
-          Claude Code is built for Anthropic models — tool use and thinking may
-          behave differently on others.</p>
+        <p class="hint" id="or-msg" style="margin-top:6px"></p>
       </div>
-      <label class="field">
-        <span>Model <span class="hint" id="model-count"></span></span>
-        <select id="set-model"></select>
-      </label>
-      <label class="field">
-        <span>Backup model — used only if the one above is overloaded or
-          unavailable, so a long task degrades instead of dying part-way.</span>
-        <select id="set-fallback"></select>
-      </label>
-      <label class="field">
-        <span>Longest reply, in tokens — <b>0 uses the default (64000)</b>.
-          Pay-as-you-go providers reserve credit for this whole amount up
-          front, so a big default is refused outright on a small balance.
-          2000 is ample here: this app sends many short messages.</span>
-        <input type="number" id="set-maxout" min="0" max="128000" step="500">
-      </label>
-      <label class="field">
-        <span>Screenshot detail — what each picture costs the model. Standard
-          (~1,600 visual tokens) reads a normal page; High (~4,800) is for
-          dense small text; Low (~1,000) for cheap trials. Clicks never
-          depend on this: coordinates are scaled by the picture's shown size.</span>
-        <select id="set-shotdetail">
-          <option value="low">Low — cheapest</option>
-          <option value="standard">Standard</option>
-          <option value="high">High — sharpest</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>Maximum steps per task — <b>0 means no limit</b>. A long task is
-          not a stuck one; the stall check below is what catches stuck work.</span>
-        <input type="number" id="set-turns" min="0" max="2000">
-      </label>
 
-      <h2>Keep going when stuck</h2>
-      <label class="field">
-        <span>Check progress every (minutes)</span>
-        <input type="number" id="set-wd" min="1" max="600">
-      </label>
-      <label class="field">
-        <span>Treat as stalled after (minutes of no progress)</span>
-        <input type="number" id="set-stall" min="1" max="120">
-      </label>
+      <details class="adv">
+        <summary>Advanced — where the agent's model runs, limits, backup model</summary>
+        <label class="field"><span>Where the agent's model runs</span>
+          <select data-key="provider" id="set-provider">
+            <option value="anthropic">Anthropic — your Claude subscription (recommended)</option>
+            <option value="openrouter">OpenRouter — any model it offers</option>
+            <option value="gemini">Google Gemini — through the local proxy</option>
+            <option value="custom">Local / custom endpoint</option>
+          </select></label>
+        <div id="cu-box" hidden>
+          <label class="field"><span>Endpoint URL — must speak the Anthropic API
+            (<code>/v1/messages</code>), e.g. LiteLLM on <code>http://localhost:4000</code>.</span>
+            <input data-key="base_url" id="set-baseurl" placeholder="http://localhost:4000"></label>
+        </div>
+        <div id="gm-box" hidden>
+          <div class="crow" style="margin:-4px 0 8px">
+            <input id="gm-key" type="password" placeholder="Gemini API key (AIza…)" style="flex:1">
+            <button id="gm-save">Save key</button>
+            <button id="gm-test">Test</button>
+          </div>
+          <p class="hint" id="gm-msg" style="margin:0 0 6px">Get one at aistudio.google.com/apikey.
+            The app starts the LiteLLM proxy it goes through whenever a task needs it.</p>
+          <p class="hint" style="margin:0 0 12px" id="cu-proxy"></p>
+        </div>
+        <label class="field"><span>Backup model — only if the agent's model is overloaded</span>
+          <select data-key="fallback_model" id="set-fallback"></select></label>
+        <label class="field"><span>Longest reply, in tokens — <b>0 = default (64000)</b>.
+          Pay-as-you-go providers reserve credit for this amount up front.</span>
+          <input type="number" data-key="max_output_tokens" min="0" max="128000" step="500"></label>
+        <label class="field"><span>Screenshot detail — what each picture costs the model</span>
+          <select data-key="screenshot_detail">
+            <option value="low">Low — cheapest (~1,000 tokens)</option>
+            <option value="standard">Standard (~1,600)</option>
+            <option value="high">High — dense small text (~4,800)</option>
+          </select></label>
+        <label class="field"><span>Maximum agent steps per task — <b>0 = no limit</b></span>
+          <input type="number" data-key="max_turns" min="0" max="2000"></label>
+        <label class="field"><span>Small fast model for one-line jobs (OpenRouter id)</span>
+          <input data-key="quick_model" placeholder="anthropic/claude-haiku-4.5"></label>
+      </details>
 
+      <!-- BEHAVIOUR -------------------------------------------------------- -->
+      <h2 style="margin-top:22px">Behaviour</h2>
+      <label class="field"><span>Before a buy / pay / send / delete click</span>
+        <select data-key="automation_level" id="set-level">
+          <option value="supervised">Supervised — always ask me first</option>
+          <option value="auto">Fully automated — scripts I marked trusted may go ahead</option>
+        </select></label>
+      <p class="hint" style="margin:-8px 0 14px">Scripts Claude wrote are drafts and always ask,
+        whichever you choose, until you mark them trusted in the Scripts tab.</p>
+      <div class="toggle"><input type="checkbox" data-key="scripts_first" id="eng-first">
+        <label for="eng-first">Try saved scripts before asking Claude to do the whole task</label></div>
+      <div class="toggle"><input type="checkbox" data-key="author_scripts" id="eng-author">
+        <label for="eng-author">When no script fits, let Claude write one and keep it for next time</label></div>
+      <div class="toggle"><input type="checkbox" data-key="browser_headless" id="set-headless">
+        <label for="set-headless">Run the browser invisibly (falls back to visible when a site blocks it)</label></div>
+
+      <div class="grid2">
+        <label class="field"><span>Claude rescue tries per stuck step (0 = go straight to takeover)</span>
+          <input type="number" data-key="rescue_tries" min="0" max="5"></label>
+        <label class="field"><span>Stuck when nothing on screen moves for (seconds)</span>
+          <input type="number" data-key="no_change_seconds" min="3" max="120"></label>
+        <label class="field"><span>Still loading (spinner, busy cursor) may overrun by (seconds)</span>
+          <input type="number" data-key="busy_grace_seconds" min="0" max="300"></label>
+        <label class="field"><span>Waiting for you: remind after (minutes)</span>
+          <input type="number" data-key="remind_after_minutes" min="0.5" max="1440" step="0.5"></label>
+        <label class="field"><span>Waiting for you: pause the task after (minutes)</span>
+          <input type="number" data-key="wait_limit_minutes" min="1" max="1440"></label>
+        <label class="field"><span>Claude agent silent for (minutes) → tell me</span>
+          <input type="number" data-key="stall_minutes" min="1" max="240"></label>
+      </div>
+      <p class="hint" id="wd-status" style="margin:-4px 0 12px"></p>
+
+      <!-- LOGINS ----------------------------------------------------------- -->
       <h2>Logins</h2>
       <p class="hint" style="margin:-4px 0 12px">
         Stored encrypted by Windows, tied to your account on this PC. A task
@@ -397,11 +425,13 @@ input::placeholder{color:var(--ink3)}
         <button id="cred-add">Save login</button>
       </div>
 
+      <!-- TELEGRAM --------------------------------------------------------- -->
       <h2>Reaching you when you're away</h2>
       <p class="hint" style="margin:-4px 0 12px">
-        If a task needs a decision while you're not at the PC, it can ask you on
-        Telegram. A bot can't message you first, so you have to open its link
-        once and press Start — that's the pairing step.</p>
+        If a task needs a decision while you're not at the PC, it asks you on
+        Telegram, and reminders go there too. Reply <b>cancel</b> (or iptal, /stop)
+        to stop a running task from your phone. A bot can't message you first, so
+        open its link once and press Start — that's the pairing step.</p>
       <div class="card" id="chanCard"></div>
       <div class="crow" style="margin-top:10px">
         <input id="tg-token" placeholder="Bot token from @BotFather" style="flex:1">
@@ -415,7 +445,6 @@ input::placeholder{color:var(--ink3)}
 
       <h2>This machine</h2>
       <div class="card" id="machineCard"></div>
-      <button id="save">Save settings</button>
     </div>
   </div>
 </main>
@@ -613,22 +642,7 @@ function render(state) {
      <div class="stat"><span>paired</span><b>${tg.paired ? "yes" : "no — press Pair"}</b></div>
      <div class="stat"><span>mail</span><b>${(ch.mail||{}).configured ? esc(ch.mail.to) : "not set up"}</b></div>`;
 
-  const s = state.settings;
-  // Only re-apply saved settings while the user is NOT mid-edit. This asked
-  // set-level alone, so changing any OTHER field — the provider dropdown —
-  // was silently reverted by the next 900ms poll.
-  if (!settingsTouched()) {
-    document.getElementById("set-level").value = s.automation_level;
-    document.getElementById("set-headless").checked = !!s.browser_headless;
-    document.getElementById("set-wd").value = s.watchdog_minutes;
-    document.getElementById("set-stall").value = s.stall_minutes;
-    document.getElementById("set-turns").value = s.max_turns ?? 0;
-    document.getElementById("set-provider").value = s.provider ?? "anthropic";
-    document.getElementById("set-maxout").value = s.max_output_tokens ?? 0;
-    document.getElementById("set-shotdetail").value = s.screenshot_detail ?? "standard";
-    document.getElementById("set-baseurl").value = s.base_url ?? "";
-    fillModels(s.provider ?? "anthropic", s.model ?? "", s.fallback_model ?? "");
-  }
+  applySettings(state);
   // Key presence and proxy state are shown, never the key itself.
   const keys = state.keys || {};
   renderEngines(state, keys);
@@ -676,26 +690,6 @@ document.getElementById("pause").onclick = async () => {
 document.getElementById("task").addEventListener("keydown", e => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) document.getElementById("run").click();
 });
-document.getElementById("save").onclick = async () => {
-  await api().update_settings({
-    automation_level: document.getElementById("set-level").value,
-    browser_headless: document.getElementById("set-headless").checked,
-    watchdog_minutes: +document.getElementById("set-wd").value,
-    stall_minutes: +document.getElementById("set-stall").value,
-    max_turns: +document.getElementById("set-turns").value,
-    model: document.getElementById("set-model").value,
-    fallback_model: document.getElementById("set-fallback").value,
-    provider: document.getElementById("set-provider").value,
-    max_output_tokens: +document.getElementById("set-maxout").value,
-    screenshot_detail: document.getElementById("set-shotdetail").value,
-    base_url: document.getElementById("set-baseurl").value.trim(),
-  });
-  // Saved is the new truth, so stop holding the poll off — otherwise these
-  // fields stay "being edited" forever and never reflect what was stored.
-  SET_IDS.forEach(id => delete document.getElementById(id).dataset.touched);
-  document.getElementById("save").textContent = "Saved";
-  setTimeout(() => document.getElementById("save").textContent = "Save settings", 1400);
-};
 // Populate both model dropdowns for a provider. OpenRouter's list is fetched
 // live by the app, so it is never a stale hardcoded set.
 let modelsFor = null;
@@ -703,7 +697,6 @@ let pendingFor = null;          // a fetch already in flight for this provider
 let fillSeq = 0;                // newest request wins; older ones may not paint
 const viaProxy = p => p === "gemini" || p === "custom";
 async function fillModels(provider, model, fallback) {
-  document.getElementById("or-box").hidden = provider !== "openrouter";
   document.getElementById("cu-box").hidden = provider !== "custom";
   document.getElementById("gm-box").hidden = !viaProxy(provider);
   if (modelsFor === provider) { setSel(model, fallback); return; }
@@ -744,45 +737,120 @@ function setSel(model, fallback) {
     f.add(new Option(fallback + " (saved)", fallback));
   m.value = model; f.value = fallback;
 }
-document.getElementById("set-provider").addEventListener("change", e => {
-  e.target.dataset.touched = 1;
-  fillModels(e.target.value, "", "");
+// -- Settings: every control saves the moment it changes ------------------------
+// A control carries data-key="<setting>"; nothing else is needed. The poll
+// repaints controls from the saved settings, EXCEPT the one being edited and
+// any changed in the last few seconds - so a slow save can never be
+// overwritten by a stale poll, which was the old page's recurring bug.
+const CLAUDE_MODELS = [
+  ["opus", "Opus — latest"], ["claude-opus-5-5", "Opus 5.5"],
+  ["sonnet", "Sonnet — latest, faster"], ["claude-sonnet-5", "Sonnet 5"],
+  ["haiku", "Haiku — fastest, cheapest"]];
+document.querySelectorAll("select.claude-models").forEach(sel => {
+  sel.innerHTML = CLAUDE_MODELS.map(([v, n]) =>
+    `<option value="${v}">${n}</option>`).join("");
 });
-// -- engines: Jev + Claude ---------------------------------------------------
-const jevHint = {openrouter: "OpenRouter key (sk-or-…) — same key as the OpenRouter provider",
+const lastEdit = {};
+function setControl(el, v) {
+  if (el.type === "checkbox") { el.checked = !!v; return; }
+  if (el.tagName === "SELECT" && v !== "" && v != null
+      && ![...el.options].some(o => o.value === String(v)))
+    el.add(new Option(`${v} (saved)`, v));
+  el.value = v ?? "";
+}
+function applySettings(state) {
+  const s = state.settings || {};
+  document.querySelectorAll("[data-key]").forEach(el => {
+    const k = el.dataset.key;
+    if (document.activeElement === el) return;
+    if (Date.now() - (lastEdit[k] || 0) < 3000) return;
+    if (k === "model" || k === "fallback_model") return;   // fillModels owns these
+    if (s[k] !== undefined) setControl(el, s[k]);
+  });
+  const prov = s.provider || "anthropic";
+  if (Date.now() - (lastEdit.provider || 0) > 3000)
+    fillModels(prov, s.model ?? "", s.fallback_model ?? "");
+  const dec = document.getElementById("set-decider").value;
+  document.getElementById("decider-claude-box").hidden = dec !== "claude";
+  document.getElementById("decider-jev-box").hidden = dec !== "jev";
+}
+let flashTimer = null;
+function flashSaved(text, bad) {
+  const f = document.getElementById("saved-flash");
+  f.textContent = text; f.className = "saved-flash " + (bad ? "bad" : "ok");
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { f.textContent = ""; }, 2200);
+}
+document.querySelectorAll("[data-key]").forEach(el =>
+  el.addEventListener("change", async () => {
+    const k = el.dataset.key;
+    const v = el.type === "checkbox" ? el.checked
+            : el.type === "number" ? Number(el.value) : el.value;
+    lastEdit[k] = Date.now();
+    if (k === "provider") fillModels(v, "", "");
+    if (k === "decider") {
+      document.getElementById("decider-claude-box").hidden = v !== "claude";
+      document.getElementById("decider-jev-box").hidden = v !== "jev";
+    }
+    try {
+      const saved = await api().update_settings({[k]: v});
+      const got = saved ? saved[k] : undefined;
+      if (got !== undefined && el.type !== "checkbox" && String(got) !== String(v)) {
+        setControl(el, got);                 // clamped into range
+        flashSaved(`✓ saved (${k} adjusted to ${got})`);
+      } else flashSaved("✓ saved");
+    } catch (e) { flashSaved("✗ not saved", true); }
+  }));
+
+// -- engines: status and tests -----------------------------------------------------
+const jevHint = {openrouter: "Uses the OpenRouter key below — nothing to enter here",
                  typesafe: "TypeSafe API key", cloudflare: "Cloudflare API token"};
+const ago = t => t ? ` · tested ${fmt(Date.now()/1000 - t)} ago` : "";
 function testLine(t, what) {
   if (!t) return "";
-  if (!t.ok) return `✗ ${what} test failed: ${t.error || "wrong answer"}`;
-  return what === "Jev"
-    ? `✓ working · ${t.latency_ms} ms · chose "${t.choice}" (margin ${t.margin}) · ${t.model}`
-    : `✓ working · ${t.model} · ${(t.latency_ms/1000).toFixed(1)} s`
-      + (t.cost_usd ? ` · $${t.cost_usd.toFixed(3)}` : "");
+  if (!t.ok) return `✗ ${what}: ${t.error || "wrong answer"}`;
+  if (what === "decider" && t.decider === "claude" || what === "Claude")
+    return `✓ working · ${t.model} · ${(t.latency_ms/1000).toFixed(1)} s`
+      + (t.cost_usd ? ` · $${t.cost_usd.toFixed(3)}` : "") + ago(t.at);
+  if (what === "decider")
+    return `✓ Jev working · ${t.latency_ms} ms · chose "${t.choice}" (margin ${t.margin})` + ago(t.at);
+  if (what === "OpenRouter")
+    return `✓ key works · used $${(t.usage ?? 0).toFixed(3)}`
+      + (t.left != null ? ` · $${t.left} left` : " · no limit set") + ago(t.at);
+  if (what === "Gemini") return `✓ key works · ${t.models} models` + ago(t.at);
+  return "✓ working";
 }
 function renderEngines(state, keys) {
   const s = state.settings || {};
   const be = document.getElementById("jev-backend");
-  if (document.activeElement !== be) be.value = s.jev_backend || "openrouter";
-  const first = document.getElementById("eng-first");
-  if (document.activeElement !== first) first.checked = s.scripts_first !== false;
   document.getElementById("jev-acct").hidden = be.value !== "cloudflare";
+  document.getElementById("jev-key-row").hidden = be.value === "openrouter";
   const kf = document.getElementById("jev-key");
   kf.placeholder = keys.jev ? "Key saved — paste a new one to replace it"
                             : jevHint[be.value] || "Jev key";
   document.getElementById("jev-state").textContent =
     keys.jev ? "· key saved" : "· no key — saved scripts will be skipped";
+  document.getElementById("or-state").textContent =
+    keys.openrouter ? "· saved" : "· not set";
+  document.getElementById("or-key").placeholder = keys.openrouter
+    ? "Key saved — paste a new one to replace it" : "OpenRouter API key (sk-or-…)";
+  document.getElementById("claude-state").textContent =
+    (s.provider || "anthropic") === "anthropic" ? "· your Claude login"
+      : `· through ${s.provider} (Advanced)`;
   const kt = state.key_tests || {};
-  const jm = document.getElementById("jev-msg");
-  if (!jm.dataset.busy) jm.textContent = testLine(kt.jev, "Jev");
-  const cm = document.getElementById("claude-msg");
-  if (!cm.dataset.busy) cm.textContent = testLine(kt.claude, "Claude");
+  for (const [id, key, what] of [["jev-msg", "decider", "decider"],
+      ["claude-msg", "claude", "Claude"], ["or-msg", "openrouter", "OpenRouter"],
+      ["gm-msg", "gemini", "Gemini"]]) {
+    const m = document.getElementById(id);
+    if (m && !m.dataset.busy && kt[key]) m.textContent = testLine(kt[key], what);
+  }
+  const wd = state.watchdog || {};
+  const stalled = (wd.stalled || []).length;
+  document.getElementById("wd-status").textContent = wd.running
+    ? `Watchdog on — checks every ${Math.round((wd.stall_after_s || 0) / 60)} min of silence`
+      + (stalled ? ` · ${stalled} task(s) flagged silent` : " · nothing flagged")
+    : "Watchdog idle — it runs while a task runs.";
 }
-document.getElementById("eng-first").addEventListener("change", async e => {
-  await api().update_settings({scripts_first: e.target.checked}); poll();
-});
-document.getElementById("jev-backend").addEventListener("change", async e => {
-  await api().update_settings({jev_backend: e.target.value}); poll();
-});
 document.getElementById("jev-save").onclick = async () => {
   const el = document.getElementById("jev-key");
   const acct = document.getElementById("jev-acct").value;
@@ -799,10 +867,16 @@ async function runTest(btn, msgId, call, busyText) {
   try { await call(); } finally { delete m.dataset.busy; b.disabled = false; poll(); }
 }
 document.getElementById("jev-test").onclick = () =>
-  runTest("jev-test", "jev-msg", () => api().test_jev(), "Asking Jev one question…");
+  runTest("jev-test", "jev-msg", () => api().test_decider(),
+          document.getElementById("set-decider").value === "claude"
+            ? "Asking Claude one question (~5–30 s)…" : "Asking Jev one question…");
 document.getElementById("claude-test").onclick = () =>
   runTest("claude-test", "claude-msg", () => api().test_claude(),
-          "Asking Claude to reply OK (can take ~10–30 s)…");
+          "Asking the agent's model to reply OK (~10–30 s)…");
+document.getElementById("or-test").onclick = () =>
+  runTest("or-test", "or-msg", () => api().test_openrouter(), "Checking the key…");
+document.getElementById("gm-test").onclick = () =>
+  runTest("gm-test", "gm-msg", () => api().test_gemini(), "Checking the key…");
 
 // -- Scripts tab ---------------------------------------------------------------
 const openSteps = new Set();
@@ -898,14 +972,6 @@ document.getElementById("gm-save").onclick = async () => {
     : ("Could not save: " + r.error);
   el.value = "";
 };
-
-const SET_IDS = ["set-level","set-headless","set-wd","set-stall","set-turns",
-                 "set-model","set-fallback","set-provider","set-maxout","set-baseurl",
-                 "set-shotdetail"];
-const settingsTouched = () =>
-  SET_IDS.some(id => document.getElementById(id).dataset.touched);
-SET_IDS.forEach(id =>
-  document.getElementById(id).addEventListener("change", e => e.target.dataset.touched = 1));
 
 window.runJob = async id => { await api().run_job(id);
   document.querySelector('.tab[data-pane=task]').click(); poll(); };
