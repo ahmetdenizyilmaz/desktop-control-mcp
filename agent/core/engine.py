@@ -57,6 +57,8 @@ class Outcome:
     prompt: str = ""          # for kind=claude: what the full agent is told
     script: str = ""
     report: Any = None
+    authored: bool = False    # Claude wrote this script for this very task
+    where: str = ""           # the step that failed, for the save-back
 
 
 @dataclass
@@ -139,10 +141,10 @@ def listed_rows(lib) -> list[dict]:
 
 class ScriptEngine:
     def __init__(self, settings: dict, say: Callable[[str, str], None],
-                 set_status: Callable[[Status], None] | None = None,
+                 set_status: Callable[[dict], None] | None = None,
                  set_current: Callable[[dict | None], None] | None = None,
                  provider_env: dict | None = None,
-                 client=None) -> None:
+                 client=None, cancel_watch=None) -> None:
         self.settings = settings
         self.say = say
         self._set_status = set_status or (lambda s: None)
@@ -150,11 +152,20 @@ class ScriptEngine:
         self.provider_env = provider_env or {}
         self._client = client              # tests inject a fake Jev
         self.status = Status()
+        self.cancel_watch = cancel_watch
+        self.pulse = None
+        self.wait = None
+        self._last_event = self._last_acted = time.time()
+        self._waiting = self._rescuing = False
+        self._extended = 0.0
 
     # -- status ---------------------------------------------------------
     def _status(self, state: str, script: str = "", detail: str = "") -> None:
         self.status = Status(state, script or self.status.script, detail)
-        self._set_status(self.status)
+        self._set_status(self.status.as_dict())
+
+    def _set_status_raw(self, d: dict) -> None:
+        self._set_status(d)
 
     def jev(self):
         if self._client is None:
@@ -255,34 +266,220 @@ class ScriptEngine:
 
     # -- 3. execute -------------------------------------------------------
     def _confirm(self, word: str, el) -> bool:
-        """A commitment the script wants to make - ask the person."""
+        """A commitment the script wants to make - ask the person.
+
+        Waiting for this answer is WAITING, not stuck: the wait policy
+        reminds and eventually pauses, and after a Resume the question is
+        asked again. Only a real answer (or Stop) ends it.
+        """
         from . import channel as chan
         import tools_sdk
-        self._status("asking", detail=f"approve '{el.name}'?")
-        reply = chan.channel.ask(
-            f"The script wants to click '{el.name}' — that looks like a "
-            f"commitment ('{word}'). Allow it?",
-            approve_deny=True, timeout_s=900,
-            cancelled=tools_sdk.should_stop)
-        self._status("acting")
-        return reply.ok
+        q = (f"The script wants to click '{el.name}' — that looks like a "
+             f"commitment ('{word}'). Allow it?")
+        while True:
+            reply = chan.channel.ask(q, approve_deny=True,
+                                     timeout_s=self._limit_s(),
+                                     cancelled=tools_sdk.should_stop)
+            if tools_sdk.should_stop():
+                return False
+            if reply.answer in (chan.Answer.APPROVE, chan.Answer.DENY,
+                                chan.Answer.TEXT):
+                return reply.ok
+            if reply.answer is chan.Answer.UNREACHABLE:
+                self.say("system", "Nobody could be asked (no app window, "
+                                   "no Telegram) — not clicking it.")
+                return False
+            # Timed out: pause, and ask again once resumed.
+            if self.wait is not None and not tools_sdk.is_paused():
+                self.wait.paused_by_us = True
+                tools_sdk.set_paused(True)
+                self.say("system", "No answer — paused. Press Resume and "
+                                   "the question comes back.")
+            self._hold()
+
+    def _limit_s(self) -> float:
+        return float(self.settings.get("wait_limit_minutes") or 60) * 60
 
     def _on_step(self, o) -> None:
         mark = "✓" if o.ok else ("·" if o.skipped else "✗")
         self.say("job", f"{mark} {o.where}  {o.detail[:140]}")
-        self._status("acting", detail=o.where)
+
+    # -- the hooks the runner calls (on the tool thread) -------------------
+    def _hold(self) -> float:
+        """Block while paused; return how long, so waits shift their
+        deadlines instead of losing the time."""
+        import tools_sdk
+        if not tools_sdk.is_paused():
+            return 0.0
+        t0 = time.time()
+        from script.runner import Stopped
+        while tools_sdk.is_paused():
+            if tools_sdk.should_stop():
+                raise Stopped("stopped while paused")
+            time.sleep(0.25)
+        return time.time() - t0
+
+    def _phase(self, kind: str, info: dict) -> None:
+        self._last_event = time.time()
+        where = info.get("where", "")
+        if kind == "acted":
+            if self.pulse is not None:
+                self.pulse.touch()
+            self._last_acted = time.time()
+            self._extended = 0.0
+        elif kind == "step_start":
+            self._status("acting", detail=where)
+        elif kind in ("wait_begin", "confirm_begin"):
+            reason = (info.get("reason") if kind == "wait_begin"
+                      else f"your OK to click '{info.get('name', '')}'")
+            self._waiting = True
+            if self.wait is not None:
+                self.wait.begin(reason)
+            self._status("waiting" if kind == "wait_begin" else "asking",
+                         detail=f"waiting for {reason}")
+            self._set_current({"tool": "wait_for_reply" if kind == "wait_begin"
+                               else "ask_user", "detail": reason,
+                               "since": time.time()})
+        elif kind in ("wait_end", "confirm_end"):
+            self._waiting = False
+            if self.wait is not None:
+                self.wait.end()
+            self._status("acting", detail=where)
+            self._set_current({"tool": "script", "detail": self.status.script,
+                               "since": time.time()})
+            self._last_acted = time.time()
+        elif kind == "rescue_begin":
+            self._rescuing = True
+            self._status("rescuing", detail=f"stuck at {where} — Claude "
+                         f"rescue {info.get('try')}/{info.get('of')}")
+        elif kind == "rescue_end":
+            self._rescuing = False
+        elif kind == "assist_round":
+            self._rescuing = True
+            self._status("rescuing", detail=f"Claude working it out "
+                         f"(round {info.get('round')}/{info.get('of')})")
+        elif kind == "pick_unsure":
+            self.say("system", f"Jev could not choose at {where}: "
+                               f"{info.get('why', '')}")
+
+    def _patience(self, elapsed: float, timeout: float) -> str:
+        """Stuck, or still loading? Asked on every poll of a wait.
+
+        stuck    the driven window has not moved at all for
+                 `no_change_seconds` since the last action, and nothing is
+                 busy -> give up now and let the rescue start
+        loading  something is still moving (a spinner, the busy cursor) ->
+                 at the timeout, extend, up to `busy_grace_seconds`
+        """
+        if self.pulse is None or self._waiting:
+            return "keep"
+        quiet = float(self.settings.get("no_change_seconds") or 10)
+        since_act = time.time() - self._last_acted
+        if (elapsed >= quiet and since_act >= quiet
+                and self.pulse.still_for() >= quiet and not self.pulse.busy()):
+            self.say("system", f"Nothing has moved on screen for "
+                               f"{self.pulse.still_for():.0f}s — treating the "
+                               f"step as stuck.")
+            return "fail"
+        if elapsed >= timeout and self.pulse.busy():
+            grace = float(self.settings.get("busy_grace_seconds") or 30)
+            if elapsed - timeout < grace:
+                return "extend"
+        return "keep"
+
+    def _hooks(self):
+        from script.runner import RunHooks
+        return RunHooks(phase=self._phase, hold=self._hold,
+                        patience=self._patience,
+                        wait_expired=lambda waited: "keep")
+
+    def _chooser(self):
+        """Jev, then Claude, then the person - for `pick` steps Jev cannot
+        answer (no key, a failed call, an answer with no options)."""
+        from script.choose import NoChoice, jev_chooser
+        jev = jev_chooser(client=self.jev())
+
+        def choose(goal, reject, options):
+            try:
+                return jev(goal, reject, options)
+            except NoChoice as e:
+                why = str(e)
+            key = self._claude_choose(goal, reject, options)
+            if key:
+                self.say("system", f"Jev could not choose ({why}); Claude "
+                                   f"chose: {options[key][:60]}")
+                return key, 1.0
+            key = self._ask_choose(goal, options)
+            if key:
+                return key, 1.0
+            raise NoChoice(f"{why}; Claude and you could not decide either")
+
+        return choose
+
+    def _claude_choose(self, goal, reject, options) -> str:
+        try:
+            from .authoring import _claude, _first_object
+            text = _claude(
+                "Pick the ONE option that fits. Goal: " + goal
+                + (f" Reject: {reject}." if reject else "")
+                + "\nOptions:\n" + "\n".join(f"{k}: {v}" for k, v in
+                                             options.items())
+                + '\nReply with only {"choice": "<key>"}.',
+                self.settings.get("param_model") or "haiku", 90,
+                self.provider_env)
+            k = str(_first_object(text).get("choice", ""))
+            return k if k in options else ""
+        except Exception:
+            return ""
+
+    def _ask_choose(self, goal, options) -> str:
+        from . import channel as chan
+        import tools_sdk
+        keys_ = list(options)
+        q = (f"Which one? {goal}\n" + "\n".join(
+            f"{i + 1}) {options[k][:70]}" for i, k in enumerate(keys_))
+             + "\nReply with the number.")
+        r = chan.channel.ask(q, approve_deny=False, timeout_s=self._limit_s(),
+                             cancelled=tools_sdk.should_stop)
+        try:
+            n = int((r.text or "").strip().split()[0].rstrip(").")) - 1
+            return keys_[n] if 0 <= n < len(keys_) else ""
+        except (ValueError, IndexError):
+            return ""
 
     def execute(self, name: str, args: dict, task: str = ""):
-        """Run a script on the tool worker thread; return its Report."""
+        """Run a script on the tool worker thread; return the Runner.
+
+        The task thread meanwhile watches: it ticks the wait policy
+        (reminder, pause), and notices a HANG - no event from the runner for
+        `hang_s` while it is acting, which only a UI Automation call that
+        never returns produces. That run is abandoned and handed over.
+        """
         import tools_sdk
+        from . import channel as chan
+        from .progress import ScreenPulse
+        from .waiting import WaitPolicy
         lib = bridge.library()
         resolved = lib.resolve(name)
         level = self.settings.get("automation_level") or "supervised"
+        script = lib.local().get(name)
+        cancel = (script.extra.get("cancel") or {}) if script else {}
+        if cancel.get("window") and self.cancel_watch is not None:
+            self.cancel_watch.watch_chat(str(cancel["window"]))
+
+        self.pulse = ScreenPulse().start()
+        self.wait = WaitPolicy(
+            float(self.settings.get("remind_after_minutes") or 5) * 60,
+            self._limit_s(), notify=chan.channel.notify, say=self.say,
+            set_paused=tools_sdk.set_paused, is_paused=tools_sdk.is_paused,
+            task=task)
+        self._last_event = self._last_acted = time.time()
+        self._waiting = self._rescuing = False
+        holder: dict = {}
 
         def job():
             from script.runner import Runner
             from script.helper import OpusHelper
-            from script.choose import jev_chooser
             from vision.elements import Watcher
             helper = None
             if self.settings.get("claude_rescue", True):
@@ -290,61 +487,114 @@ class ScriptEngine:
                     model=self.settings.get("rescue_model") or "opus",
                     budget=int(self.settings.get("rescue_budget") or 12),
                     log=lambda m: self.say("system", m.strip()),
-                    stuck_dir=paths.data("workspace", "stuck", ".keep").parent,
+                    stuck_dir=paths.data("workspace", "stuck",
+                                         ".keep").parent,
                     env=self.provider_env)
             runner = Runner(
                 resolved, Watcher(hwnd=None), GuardedActuator(self.say),
                 confirm=self._confirm,
                 should_stop=tools_sdk.should_stop,
                 on_step=self._on_step,
-                chooser=jev_chooser(client=self.jev()),
+                chooser=self._chooser(),
                 cursor=_CursorProxy(), helper=helper,
                 honour_trust=(level == "auto"),
-                rescue_tries=int(self.settings.get("rescue_tries") or 2))
+                rescue_tries=int(self.settings.get("rescue_tries") or 2),
+                hooks=self._hooks())
+            holder["runner"] = runner
             runner.run(args)
             return runner
 
         self._set_current({"tool": "script", "detail": name,
                            "since": time.time()})
         self._status("acting", script=name)
+        hang_s = float(self.settings.get("hang_seconds") or 120)
         box, done = tools_sdk._worker.call(job)
         stop_seen = 0.0
-        while not done.wait(0.25):
-            if tools_sdk.should_stop():
-                stop_seen = stop_seen or time.time()
-                if time.time() - stop_seen > 20:
-                    # The runner checks stop before every step; twenty
-                    # seconds without returning means it is inside a call
-                    # that will not come back (a UIA hang). Leave it.
+        try:
+            while not done.wait(0.25):
+                self.wait.tick()
+                self._publish_wait()
+                if tools_sdk.should_stop():
+                    stop_seen = stop_seen or time.time()
+                    if time.time() - stop_seen > 20:
+                        # The runner checks stop before every step; twenty
+                        # seconds without returning means a call that will
+                        # not come back. Leave it.
+                        tools_sdk._worker.abandon()
+                        return None
+                    continue
+                idle = time.time() - self._last_event
+                if (idle > hang_s and not self._waiting and not self._rescuing
+                        and not tools_sdk.is_paused()):
                     tools_sdk._worker.abandon()
-                    self._set_current(None)
-                    return None
-        self._set_current(None)
+                    self.say("system", f"The script has not moved for "
+                                       f"{idle:.0f}s — the window stopped "
+                                       f"answering. Handing over to Claude.")
+                    r = holder.get("runner")
+                    if r is not None:
+                        from script.runner import Outcome as StepOutcome
+                        r.report.outcomes.append(StepOutcome(
+                            self.status.detail or name, "hang",
+                            f"no progress for {idle:.0f}s", False, 0))
+                        r.hung = True
+                    return r
+        finally:
+            self.pulse.stop()
+            if self.wait.paused_by_us and tools_sdk.is_paused():
+                tools_sdk.set_paused(False)
+            self._set_current(None)
         kind, value = box[0]
         if kind == "err":
             raise value
         return value
 
-    # -- 4. the whole route -----------------------------------------------
-    def handle(self, task: str) -> Outcome:
-        self._status("routing", script="", detail="Jev is checking saved "
-                                                  "scripts")
-        try:
-            name, why = self.recognise(task)
-        except Exception as e:
-            name, why = None, f"script library unavailable ({e})"
-        self.say("system", why)
-        if not name:
-            return Outcome("claude", why=why)
+    def _publish_wait(self) -> None:
+        if self.wait is not None and self.wait.active:
+            d = self.status.as_dict()
+            d.update(self.wait.view())
+            self._set_status_raw(d)
 
+    # -- 4. the whole route -----------------------------------------------
+    def handle(self, task: str, forced: tuple[str, dict] | None = None
+               ) -> Outcome:
+        """Route a task. `forced` = (script, args): run that script (the
+        Scripts tab's Run button), skipping recognition."""
         lib = bridge.library()
-        script = lib.local()[name]
-        args = self.fill_params(script, task)
-        if args is None:
-            why = (f"{name} needs details the task does not give "
-                   f"({', '.join(k for k, v in script.params.items() if v == '')})")
-            self.say("system", why + " — handing to Claude.")
-            return Outcome("claude", why=why)
+        authored = False
+        if forced is not None:
+            name, args = forced
+            if name not in lib.local():
+                return Outcome("claude", why=f"no script {name!r}")
+        else:
+            self._status("routing", script="", detail="Jev is checking "
+                                                      "saved scripts")
+            try:
+                name, why = self.recognise(task)
+            except Exception as e:
+                name, why = None, f"script library unavailable ({e})"
+            self.say("system", why)
+            if not name and self.settings.get("author_scripts", True):
+                self._status("routing", detail="Claude is writing a script "
+                                               "for this task")
+                self.say("system", "Asking Claude to write a script for "
+                                   "this task (so next time needs no Claude)…")
+                from . import authoring
+                name, why2 = authoring.author(task, lib, self.settings,
+                                              self.provider_env, self.say)
+                self.say("system", why2)
+                authored = bool(name)
+            if not name:
+                return Outcome("claude", why=why)
+            script = lib.local()[name]
+            args = self.fill_params(script, task)
+            if args is None:
+                why = (f"{name} needs details the task does not give "
+                       f"({', '.join(k for k, v in script.params.items() if v == '')})")
+                self.say("system", why + " — handing to Claude.")
+                if authored:
+                    self._unlist(lib, name, "its parameters could not be "
+                                            "filled")
+                return Outcome("claude", why=why)
         if args:
             self.say("system", f"Parameters: {args}")
 
@@ -356,11 +606,16 @@ class ScriptEngine:
                            script=name)
         rep = runner.report
         secs = time.time() - t0
-        if rep.ok:
+        self._record_stats(name, rep)
+        if rep.ok and not getattr(runner, "hung", False):
             self._status("done", detail=f"{secs:.0f}s")
-            self.say("result", f"Done with saved script {name} in "
-                               f"{secs:.0f}s.\n{rep.summary()}"
-                     + _bought_lines(rep))
+            if authored:
+                from . import authoring
+                authoring.mark(lib, name, verified=True)
+                self.say("system", f"Saved {name} — next time Jev runs it "
+                                   f"without Claude. See the Scripts tab.")
+            self.say("result", f"Done with script {name} in {secs:.0f}s.\n"
+                               f"{rep.summary()}" + _bought_lines(rep))
             return Outcome("done", script=name, report=rep)
         if rep.stopped:
             self._status("done", detail="stopped")
@@ -371,9 +626,52 @@ class ScriptEngine:
                            f"from where it stopped.")
         shot = getattr(runner.helper, "last_shot", None) if runner.helper \
             else None
+        from .authoring import failed_where
         return Outcome("claude", why="script stuck", script=name, report=rep,
+                       authored=authored, where=failed_where(rep),
                        prompt=takeover_prompt(task, lib, name, args, rep,
                                               shot))
+
+    def _unlist(self, lib, name: str, why: str) -> None:
+        from . import authoring
+        authoring.mark(lib, name, listed=False, note=f"hidden: {why}")
+
+    def save_back(self, outcome: Outcome, result_text: str,
+                  ok: bool) -> None:
+        """After a takeover: fold Claude's fix into the script."""
+        if not outcome.script:
+            return
+        from . import authoring
+        lib = bridge.library()
+        patch = authoring.extract_patch(result_text) if ok else None
+        if patch:
+            done, msg = authoring.apply_patch(lib, patch, outcome.where)
+            if done:
+                self.say("system", f"Saved Claude's fix into {msg}. Review it "
+                                   f"in the Scripts tab.")
+                if outcome.authored:
+                    authoring.mark(lib, outcome.script, verified=True)
+                return
+            self.say("system", f"Claude's fix could not be saved ({msg}).")
+        if outcome.authored:
+            self._unlist(lib, outcome.script, "it got stuck on its first run "
+                                              "and no fix was saved")
+            self.say("system", f"{outcome.script} is kept but hidden from "
+                               f"Jev until it is fixed (Scripts tab).")
+
+    def _record_stats(self, name: str, rep) -> None:
+        try:
+            p = paths.data("script_stats.json")
+            data = json.loads(p.read_text(encoding="utf-8")) if p.exists() \
+                else {}
+            st = data.setdefault(name, {"runs": 0, "ok": 0})
+            st["runs"] += 1
+            st["ok"] += 1 if rep.ok else 0
+            st["last"] = time.time()
+            st["last_ok"] = bool(rep.ok)
+            p.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        except Exception:
+            pass
 
 
 def _bought_lines(rep) -> str:
@@ -420,8 +718,12 @@ def takeover_prompt(task: str, lib, name: str, args: dict, rep,
         parts.append("Where it failed:\n" + "\n".join(fails))
     if shot:
         parts.append(f"Screenshot at the moment it was stuck: {shot}")
+    from .authoring import PATCH_REQUEST, failed_where
+    where = failed_where(rep)
     parts += ["", "THE SCRIPT (JSON), for reference:", script_json, "",
               "Take a fresh look at the screen first — it may have moved on."]
+    if where:
+        parts += ["", f"The failed step's where is: {where}", PATCH_REQUEST]
     return "\n".join(parts)
 
 

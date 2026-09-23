@@ -298,6 +298,302 @@ t = keys.test_jev({"jev_backend": "typesafe"})
 check("testing with no key says so, without calling out",
       not t["ok"] and "no key" in t["error"], str(t))
 
+
+# --------------------------------------------------------------------------
+print("\nwaiting for a person is not being stuck")
+# --------------------------------------------------------------------------
+from core.waiting import WaitPolicy                          # noqa: E402
+
+notes, paused = [], {"on": False}
+wp = WaitPolicy(0.3, 0.8, notify=notes.append, say=say,
+                set_paused=lambda on: paused.__setitem__("on", on),
+                is_paused=lambda: paused["on"], task="weekly shop")
+wp.begin("'buy' in the chat")
+wp.tick()
+check("no reminder before its time", notes == [] and not paused["on"])
+time.sleep(0.35)
+wp.tick()
+check("a reminder after remind_after", len(notes) == 1
+      and "Still waiting" in notes[0] and "'buy'" in notes[0], str(notes))
+wp.tick()
+check("…only once", len(notes) == 1)
+time.sleep(0.5)
+wp.tick()
+check("the task PAUSES at the limit - it does not fail",
+      paused["on"] and wp.paused_by_us and len(notes) == 2, str(notes))
+paused["on"] = False              # the person presses Resume
+wp.tick()
+check("Resume restarts the wait with a fresh clock",
+      wp.active and not wp.paused_by_us and not wp.reminded
+      and wp.waited() < 0.2)
+wp.end()
+check("an answer ends the wait", not wp.active and wp.view() == {})
+
+# --------------------------------------------------------------------------
+print("\nstill, loading, or stuck - from pixels")
+# --------------------------------------------------------------------------
+import numpy as np                                           # noqa: E402
+from core.progress import diff_frames                        # noqa: E402
+
+a = np.zeros((100, 240), dtype=np.uint8)
+b = a.copy()
+check("identical frames: no change, no motion",
+      diff_frames(a, b) == (False, False))
+b[50, 10:13] = 200                 # a spinner's few pixels
+check("a few pixels (a spinner) = motion, not a change",
+      diff_frames(a, b) == (False, True))
+c = a.copy()
+c[:30, :] = 200                    # a repaint
+check("a repaint = a change", diff_frames(a, c)[0] is True)
+
+
+class FakePulse:
+    def __init__(self, still, busy):
+        self._still, self._busy = still, busy
+
+    def still_for(self):
+        return self._still
+
+    def busy(self):
+        return self._busy
+
+    def touch(self):
+        pass
+
+
+pe = engine.ScriptEngine({"no_change_seconds": 10, "busy_grace_seconds": 30},
+                         say, client=FakeClient())
+pe._last_acted = time.time() - 60
+pe.pulse = FakePulse(still=15, busy=False)
+check("dead still for 15s after the last action = stuck, fail now",
+      pe._patience(12, 45) == "fail")
+pe.pulse = FakePulse(still=3, busy=False)
+check("something moved 3s ago = not stuck yet", pe._patience(12, 45) == "keep")
+pe.pulse = FakePulse(still=0.5, busy=True)
+check("still loading at the timeout = extend",
+      pe._patience(46, 45) == "extend")
+check("…but not forever (past the busy grace)",
+      pe._patience(80, 45) == "keep")
+pe._waiting = True
+pe.pulse = FakePulse(still=600, busy=False)
+check("while WAITING for a person, a still screen is never stuck",
+      pe._patience(600, 45) == "keep")
+pe._waiting = False
+pe._last_acted = time.time()
+pe.pulse = FakePulse(still=15, busy=False)
+check("just acted: too early to call it stuck",
+      pe._patience(12, 45) == "keep")
+
+pe2 = engine.ScriptEngine({}, say, client=FakeClient())
+pe2._phase("wait_begin", {"reason": "'buy' in the chat", "where": "x"})
+check("a wait marks the engine WAITING and the tool as a wait",
+      pe2._waiting and pe2.status.state == "waiting")
+pe2._phase("wait_end", {"where": "x"})
+check("…and the end of it clears that", not pe2._waiting)
+
+# --------------------------------------------------------------------------
+print("\ncancel from anywhere")
+# --------------------------------------------------------------------------
+from core import cancel_watch as cw                          # noqa: E402
+
+check("'cancel', 'İptal', '/stop' and 'cancel 01:16' count",
+      all(cw.is_cancel(t) for t in ("cancel", "iptal", "/stop",
+                                    "Cancel.", "cancel 01:16")))
+check("a sentence or 'c-a-n-c-e-l' does not",
+      not any(cw.is_cancel(t) for t in (
+          "Durdurmak icin c-a-n-c-e-l", "please cancel my order", "cancelled",
+          "stop the music at 5")))
+
+from core import channel as chan_mod                          # noqa: E402
+
+fired = []
+
+
+class FakeTG:
+    configured = True
+
+    def __init__(self, texts):
+        self.texts = list(texts)
+
+    def _updates(self, timeout=0):
+        return [{"message": {"text": t}} for t in self.texts]
+
+
+real_tg, real_pending = chan_mod.channel.telegram, chan_mod.channel.pending
+chan_mod.channel.telegram = FakeTG(["hello", "iptal"])
+w = cw.CancelWatch(fired.append)
+w._telegram()
+check("'iptal' on Telegram fires the cancel", fired == ["'cancel' on Telegram"],
+      str(fired))
+fired.clear()
+w2 = cw.CancelWatch(fired.append)
+chan_mod.channel.pending = {"question": "Allow?"}
+w2._telegram()
+check("…but not while a Telegram question is waiting for its own answer",
+      fired == [])
+chan_mod.channel.telegram, chan_mod.channel.pending = real_tg, real_pending
+
+# --------------------------------------------------------------------------
+print("\nClaude writes a script; a fix is saved back into the right step")
+# --------------------------------------------------------------------------
+from core import authoring                                   # noqa: E402
+
+check("a step path through a repeat and a call parses",
+      authoring.parse_where("site/x.steps[2][süt].steps[0]")
+      == ("site/x", [("steps", 2), ("steps", 0)]))
+check("if/else paths parse",
+      authoring.parse_where("a/b.steps[1].else[3]")
+      == ("a/b", [("steps", 1), ("else", 3)]))
+
+patch_text = ('Done, everything is in the basket.\n```json\n'
+              '{"script_patch": {"script": "t/fixme", "at": '
+              '"t/fixme.steps[1][b].steps[0]", "steps": [{"do": "click", '
+              '"target": {"text": "Add", "match": "exact"}}, {"do": "wait", '
+              '"seconds": 1}]}}\n```')
+pt = authoring.extract_patch(patch_text)
+check("the patch block is found in Claude's final message",
+      pt and pt["at"].startswith("t/fixme") and len(pt["steps"]) == 2)
+
+tlib = bridge.library(fresh=True)
+tlib.save(__import__("script.schema", fromlist=["parse"]).parse({
+    "name": "t/fixme", "steps": [
+        {"do": "wait", "seconds": 0},
+        {"do": "repeat", "for_each": ["a", "b"], "as": "x", "steps": [
+            {"do": "click", "target": "Old {x}"}, {"do": "wait", "seconds": 0}]}]}))
+ok, msg = authoring.apply_patch(tlib, pt)
+fixed = tlib.local()["t/fixme"]
+inner = fixed.steps[1].steps
+check("the fix replaces the failed step inside the repeat",
+      ok and inner[0].target.text == "Add" and inner[1].do == "wait"
+      and len(inner) == 3, f"{msg} {[s.do for s in inner]}")
+check("the version goes up and the script is back to draft",
+      fixed.version == 2 and fixed.trust.value == "draft"
+      and fixed.extra.get("patched_by") == "claude")
+hist = list((bridge.scripts_root() / ".history").glob("t__fixme.v1.json"))
+check("the old version is kept in .history", len(hist) == 1)
+ok2, msg2 = authoring.apply_patch(tlib, {"at": "t/fixme.steps[9]",
+                                         "steps": [{"do": "wait",
+                                                    "seconds": 0}]})
+check("a patch for a step that does not exist changes nothing",
+      not ok2 and tlib.local()["t/fixme"].version == 2, msg2)
+ok3, msg3 = authoring.apply_patch(tlib, {"at": "t/fixme.steps[0]",
+                                         "steps": [{"do": "teleport"}]})
+check("an invalid step in a patch is refused", not ok3 and "rejected" in msg3,
+      msg3)
+
+replies = []
+real_claude = authoring._claude
+
+
+def fake_claude(prompt, model, timeout, env):
+    return replies.pop(0)
+
+
+authoring._claude = fake_claude
+replies[:] = ['{"script": {"name": "notepad/write-text", "description": '
+              '"Open Notepad and type text", "params": {"text": ""}, '
+              '"trust": "trusted", "steps": [{"do": "open", "app": "notepad", '
+              '"window": "Notepad"}, {"do": "type", "value": "{text}"}]}}']
+name, why = authoring.author("notepad'a merhaba yaz", tlib, {})
+got = tlib.local().get(name or "")
+check("Claude's script is validated and saved under its site folder",
+      name == "notepad/write-text" and got is not None
+      and (bridge.scripts_root() / "notepad" / "write-text.json").exists(),
+      why)
+check("…as a DRAFT, whatever it claimed, and marked unverified",
+      got.trust.value == "draft" and got.extra.get("verified") is False
+      and got.extra.get("source_task") == "notepad'a merhaba yaz")
+replies[:] = ['{"script": {"name": "notepad/write-text", "steps": '
+              '[{"do": "wait", "seconds": 0}]}}']
+name2, _ = authoring.author("again", tlib, {})
+check("a name already taken gets -2, never overwrites",
+      name2 == "notepad/write-text-2", str(name2))
+replies[:] = ['{"script": {"name": "Bad Name", "steps": []}}',
+              '{"script": {"name": "calc/add", "steps": [{"do": "call", '
+              '"script": "does/not-exist"}]}}']
+name3, why3 = authoring.author("add numbers", tlib, {})
+check("invalid twice = no script, and nothing half-saved",
+      name3 is None and "invalid twice" in why3
+      and "calc/add" not in tlib.local(), why3)
+replies[:] = ['{"script": null, "why": "a question, not a screen task"}']
+name4, why4 = authoring.author("what is 2+2", tlib, {})
+check("Claude may decline: a question is not a script",
+      name4 is None and "not a screen task" in why4, why4)
+authoring._claude = real_claude
+
+# the engine uses it: no match -> author -> run -> verified
+ea = engine.ScriptEngine({"author_scripts": True}, say, client=FakeClient())
+ea.recognise = lambda task: (None, "Jev: no saved script fits")
+authoring._claude = fake_claude
+replies[:] = ['{"script": {"name": "paint/open", "description": "Open Paint",'
+              ' "steps": [{"do": "open", "app": "mspaint", "window": '
+              '"Paint"}]}}']
+ok_rep2 = Report(script="paint/open")
+ok_rep2.outcomes.append(StepOutcome("x", "open", "opened", True, 1))
+ea.execute = lambda n, a, t="": FakeRunner(ok_rep2)
+out = ea.handle("open paint")
+authoring._claude = real_claude
+lib_now = bridge.library()
+check("no saved script: Claude writes one, it runs, it is DONE",
+      out.kind == "done" and out.script == "paint/open", f"{out.kind} {out.why}")
+check("…and once it worked it is marked verified for Jev next time",
+      lib_now.local()["paint/open"].extra.get("verified") is True)
+
+# a stuck authored script with no fix is hidden from Jev
+bad = Report(script="paint/open")
+bad.outcomes.append(StepOutcome("paint/open.steps[0]", "open", "no window",
+                                False, 1))
+eb = engine.ScriptEngine({}, say, client=FakeClient())
+eb.save_back(engine.Outcome("claude", script="paint/open", authored=True,
+                            where="paint/open.steps[0]"),
+             "I could not do it.", ok=False)
+check("a script Claude wrote that stuck and got no fix is hidden from Jev",
+      bridge.library().local()["paint/open"].extra.get("listed") is False)
+eb.save_back(engine.Outcome("claude", script="t/fixme",
+                            where="t/fixme.steps[0]"),
+             '```json\n{"script_patch": {"at": "t/fixme.steps[0]", "steps": '
+             '[{"do": "wait", "seconds": 2}]}}\n```', ok=True)
+check("after a takeover, Claude's fix is folded into the script",
+      bridge.library().local()["t/fixme"].version == 3
+      and bridge.library().local()["t/fixme"].steps[0].seconds == 2)
+
+# --------------------------------------------------------------------------
+print("\nthe Scripts tab")
+# --------------------------------------------------------------------------
+import app as appmod                                         # noqa: E402
+
+ag = appmod.Agent()
+ls = ag.list_scripts()
+sites = {g["site"] for g in ls["groups"]}
+check("scripts are grouped by site/app",
+      {"migros", "media", "notepad", "t"} <= sites, str(sorted(sites)))
+card = next(s for g in ls["groups"] for s in g["scripts"]
+            if s["name"] == "notepad/write-text")
+check("a card says who wrote it, trust, and whether Jev can pick it",
+      card["authored"] and card["trust"] == "draft" and card["jev"]
+      and card["verified"] is False, str(card))
+gs = ag.get_script("migros/weekly-shop")
+check("Steps shows one readable line per step",
+      gs["ok"] and any("migros/add-product" in l for l in gs["lines"]),
+      str(gs.get("lines", [])[:3]))
+check("trust can be raised", ag.set_script_trust("notepad/write-text",
+                                                 "trusted")["ok"]
+      and bridge.library().local()["notepad/write-text"].trust.value
+      == "trusted")
+check("a script can be hidden from Jev",
+      ag.set_script_listed("notepad/write-text", False)["ok"]
+      and not any(s["jev"] for g in ag.list_scripts()["groups"]
+                  for s in g["scripts"] if s["name"] == "notepad/write-text"))
+check("params save as defaults; an unknown one is refused",
+      ag.save_script_params("notepad/write-text", {"text": "hi"})["ok"]
+      and not ag.save_script_params("notepad/write-text", {"x": 1})["ok"])
+check("running a script with a missing required value is refused up front",
+      not ag.run_script("migros/add-product", {})["ok"])
+d = ag.delete_script("notepad/write-text-2")
+check("delete moves it to the trash",
+      d["ok"] and ".trash" in d["moved_to"]
+      and "notepad/write-text-2" not in bridge.library(fresh=True).local())
+
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)
 total = len(results)

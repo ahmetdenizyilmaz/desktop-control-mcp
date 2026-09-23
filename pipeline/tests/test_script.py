@@ -1292,6 +1292,153 @@ check("delete moves the file to .trash, and the library forgets it",
       and "site/gone" not in dlib.local(),
       f"{dest} {sorted(dlib.local())}")
 
+
+# --------------------------------------------------------------------------
+print("\nhooks — stuck vs waiting, as the host sees it")
+# --------------------------------------------------------------------------
+import time as _time                                        # noqa: E402
+from script.runner import RunHooks                          # noqa: E402
+
+events: list[tuple[str, dict]] = []
+hk = RunHooks(phase=lambda k, i: events.append((k, i)))
+wv = FakeWatcher(scene(el("button", "OK", 10, 10)))
+rep = run_script({"name": "t", "steps": [
+    {"do": "click", "target": {"text": "OK", "match": "exact"}}]},
+    wv, FakeActuator(), hooks=hk).run()
+kinds = [k for k, _ in events]
+check("phase events come in order: start, acted, end",
+      kinds == ["step_start", "acted", "step_end"], str(kinds))
+
+events.clear()
+rep = run_script({"name": "t", "steps": [
+    {"do": "click", "target": {"text": "Nope", "match": "exact"}}]},
+    FakeWatcher(scene(el("button", "OK", 10, 10))), FakeActuator(),
+    hooks=RunHooks(phase=lambda k, i: events.append((k, i)))).run()
+check("a failed step reports step_failed with its reason",
+      any(k == "step_failed" and "Nope" in i.get("detail", "")
+          for k, i in events), str(events))
+
+asked_early = []
+
+
+def fail_after(sec):
+    def p(elapsed, timeout):
+        asked_early.append(elapsed)
+        return "fail" if elapsed >= sec else "keep"
+    return p
+
+
+t0 = _time.time()
+rep = run_script({"name": "t", "steps": [
+    {"do": "wait_for", "target": {"text": "Never", "match": "exact"},
+     "timeout": 20}]},
+    FakeWatcher(scene(el("button", "OK", 10, 10))), FakeActuator(),
+    hooks=RunHooks(patience=fail_after(0.5))).run()
+took = _time.time() - t0
+check("patience 'fail' gives up long before the step's own timeout",
+      not rep.ok and took < 3, f"{took:.1f}s of a 20s timeout")
+
+calls = {"n": 0}
+
+
+def extend_twice(elapsed, timeout):
+    if elapsed >= timeout and calls["n"] < 2:
+        calls["n"] += 1
+        return "extend"
+    return "keep"
+
+
+t0 = _time.time()
+rep = run_script({"name": "t", "steps": [
+    {"do": "wait_for", "target": {"text": "Never", "match": "exact"},
+     "timeout": 0.5}]},
+    FakeWatcher(scene(el("button", "OK", 10, 10))), FakeActuator(),
+    hooks=RunHooks(patience=extend_twice)).run()
+took = _time.time() - t0
+check("patience 'extend' keeps a busy wait going past its timeout",
+      not rep.ok and calls["n"] == 2 and took >= 2.0, f"{took:.1f}s")
+
+held = {"n": 0}
+
+
+def hold_once():
+    if held["n"] == 0:
+        held["n"] += 1
+        _time.sleep(1.2)
+        return 1.2
+    return 0.0
+
+
+t0 = _time.time()
+wa = FakeWatcher(scene(el("button", "OK", 10, 10)))
+rep = run_script({"name": "t", "steps": [
+    {"do": "wait_for", "target": {"text": "Never", "match": "exact"},
+     "timeout": 1.0}]}, wa, FakeActuator(),
+    hooks=RunHooks(hold=hold_once)).run()
+took = _time.time() - t0
+check("a pause moves the deadline instead of eating the wait",
+      took >= 2.0, f"{took:.1f}s for a 1s wait with a 1.2s pause")
+
+
+class ChatWatcher(FakeWatcher):
+    """Pixels of a chat: 'buy' arrives on the Nth read."""
+
+    def __init__(self, arrive_after):
+        super().__init__(scene(el("text", "Sepet hazir", 10, 10,
+                                  source="ocr")))
+        self.reads = 0
+        self.arrive_after = arrive_after
+        self.content = (0, 0, 1000, 1000)
+        self.hwnd = 0
+
+    def text_scene(self):
+        self.reads += 1
+        items = [el("text", "Sepet hazir", 10, 10, source="ocr")]
+        if self.reads > self.arrive_after:
+            items.append(el("text", "buy", 10, 60, source="ocr"))
+        return scene(*items)
+
+
+expired = []
+rep = run_script({"name": "t", "steps": [
+    {"do": "wait_message", "words": ["buy"], "timeout": 1}]},
+    ChatWatcher(arrive_after=3), FakeActuator(),
+    hooks=RunHooks(wait_expired=lambda w: (expired.append(w), "keep")[1])
+).run()
+check("a chat wait that runs out is kept going when the host says so",
+      rep.ok and expired, f"ok={rep.ok} expired={expired}")
+
+ev2 = []
+rep = run_script({"name": "t", "steps": [
+    {"do": "wait_message", "words": ["buy"], "timeout": 30}]},
+    ChatWatcher(arrive_after=1), FakeActuator(),
+    hooks=RunHooks(phase=lambda k, i: ev2.append(k))).run()
+check("a chat wait tells the host it is WAITING (begin and end)",
+      "wait_begin" in ev2 and "wait_end" in ev2
+      and ev2.index("wait_begin") < ev2.index("wait_end"), str(ev2))
+
+ev3 = []
+wc = FakeWatcher(scene(el("button", "Siparişi Onayla", 10, 10)))
+run_script({"name": "t", "steps": [
+    {"do": "click", "target": "Siparişi Onayla"}]}, wc, FakeActuator(),
+    confirm=lambda w_, e: True,
+    hooks=RunHooks(phase=lambda k, i: ev3.append(k))).run()
+check("asking for approval is reported as a wait, not a stall",
+      "confirm_begin" in ev3 and "confirm_end" in ev3, str(ev3))
+
+rep = run_script({"name": "t", "steps": [
+    {"do": "repeat", "for_each": ["a", "b", "c"], "as": "x",
+     "steps": [{"do": "click", "target": {"text": "{x}", "match": "exact"}}]}]},
+    FakeWatcher(scene(el("button", "a", 10, 10), el("button", "b", 10, 60),
+                      el("button", "c", 10, 110))),
+    FakeActuator(), skip_items={"a", "b"})
+ra = rep.act if hasattr(rep, "act") else None
+out = rep.run()
+check("skip_items resumes a repeat without redoing finished items",
+      rep.act.log == ["click:c"] and out.items == {"a": True, "b": True,
+                                                   "c": True},
+      f"{rep.act.log} {out.items}")
+
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)
 total = len(results)

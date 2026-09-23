@@ -108,6 +108,20 @@ DEFAULTS = {
     # before the full Claude agent takes the rest of the task over.
     "rescue_tries": 2,
     "rescue_model": "opus",
+    # No saved script fits: Claude writes one, it runs, and when it works
+    # it is saved so the same task next time needs no Claude at all.
+    "author_scripts": True,
+    # -- stuck vs waiting ---------------------------------------------------
+    # A step whose window has not moved at all for this long after an
+    # action is stuck (the rescue starts early instead of at its timeout).
+    "no_change_seconds": 10,
+    # A window that IS still moving (spinner, busy cursor) may overrun a
+    # step's timeout by this much before it counts as stuck.
+    "busy_grace_seconds": 30,
+    # Waiting for YOU (a chat reply, an approval) is not stuck: remind
+    # after this long, pause the task after the second.
+    "remind_after_minutes": 5,
+    "wait_limit_minutes": 60,
 }
 
 
@@ -483,6 +497,12 @@ class Agent:
         self._engine_status: dict = {"state": "idle"}
         #: Last result of each Settings "Test" button, shown until retested.
         self._key_tests: dict = {}
+        #: Set by run_script: route straight to that script, no Jev.
+        self._forced: tuple | None = None
+        self._engine = None
+        self._cancel_watch = None
+        #: The final message of the Claude run, for saving a fix back.
+        self._last_result: dict = {"text": "", "error": True}
 
     # -- feed ------------------------------------------------------------
     def _say(self, kind: str, text: str, **extra) -> None:
@@ -1086,6 +1106,143 @@ class Agent:
         self._key_tests["claude"] = r
         return r
 
+    # -- the Scripts tab --------------------------------------------------
+    def list_scripts(self) -> dict:
+        """Every saved script, grouped by site/app, plus unreadable files."""
+        try:
+            from core import pipeline_bridge as bridge
+            from core.engine import listed_rows
+            lib = bridge.library(fresh=True)
+        except Exception as e:
+            return {"groups": [], "errors": [f"{type(e).__name__}: {e}"]}
+        try:
+            stats = json.loads(paths.data("script_stats.json").read_text(
+                encoding="utf-8"))
+        except Exception:
+            stats = {}
+        jev_names = {r["name"] for r in listed_rows(lib)}
+        groups: dict[str, list] = {}
+        for name, sc in sorted(lib.local().items()):
+            st = stats.get(name, {})
+            groups.setdefault(name.split("/")[0], []).append({
+                "name": name, "description": sc.description,
+                "params": dict(sc.params), "trust": sc.trust.value,
+                "version": sc.version, "steps": len(sc.steps),
+                "jev": name in jev_names,
+                "authored": sc.extra.get("authored_by") == "claude",
+                "patched": bool(sc.extra.get("patched_by")),
+                "verified": sc.extra.get("verified"),
+                "note": sc.extra.get("note", ""),
+                "runs": st.get("runs", 0), "ok_runs": st.get("ok", 0),
+                "last": st.get("last"), "last_ok": st.get("last_ok")})
+        return {"groups": [{"site": k, "scripts": v}
+                           for k, v in sorted(groups.items())],
+                "errors": list(lib.errors)}
+
+    def get_script(self, name: str) -> dict:
+        """The script as JSON, plus one readable line per step."""
+        from core import pipeline_bridge as bridge
+        from script.library import to_json
+        lib = bridge.library()
+        sc = lib.local().get(name)
+        if sc is None:
+            return {"ok": False, "error": f"no script {name!r}"}
+
+        def lines(steps, depth=0):
+            out = []
+            for st in steps:
+                bits = [st.do]
+                for sel in (st.target, st.into):
+                    if sel is not None:
+                        bits.append(sel.describe())
+                if st.value:
+                    bits.append(repr(st.value))
+                if st.keys:
+                    bits.append(st.keys)
+                if st.app or st.url:
+                    bits.append(f"{st.app} {st.url}".strip())
+                if st.window:
+                    bits.append(f"window {st.window!r}")
+                if st.script:
+                    bits.append(f"{st.script} {st.with_args or ''}".strip())
+                if st.for_each:
+                    bits.append(f"for each of {len(st.for_each)}")
+                if st.words:
+                    bits.append(f"words {list(st.words)}")
+                if st.goal:
+                    bits.append(st.goal[:80])
+                if st.expect is not None:
+                    bits.append(f"→ expect {st.expect.describe()}")
+                out.append("  " * depth + " · ".join(bits))
+                out += lines(st.then, depth + 1)
+                out += lines(st.otherwise, depth + 1)
+                out += lines(st.steps, depth + 1)
+            return out
+        path = lib.path_of(name)
+        return {"ok": True, "name": name, "json": to_json(sc),
+                "lines": lines(sc.steps), "path": str(path) if path else ""}
+
+    def run_script(self, name: str, args: dict | None = None) -> dict:
+        """Run one script now, skipping Jev (the Scripts tab's Run)."""
+        from core import pipeline_bridge as bridge
+        sc = bridge.library().local().get(name)
+        if sc is None:
+            return {"ok": False, "error": f"no script {name!r}"}
+        vals = {k: str(v) for k, v in (args or {}).items()}
+        missing = [k for k, d in sc.params.items() if d == "" and not vals.get(k)]
+        if missing:
+            return {"ok": False, "error": f"needs: {', '.join(missing)}"}
+        with self._start_lock:
+            if self.running:
+                return {"ok": False, "error": "A task is already running."}
+        self._forced = (name, {k: vals.get(k) or d
+                               for k, d in sc.params.items()})
+        r = self.run_task(f"Run script {name}"
+                          + (f" with {vals}" if vals else ""))
+        if not r.get("ok"):
+            self._forced = None
+        return r
+
+    def save_script_params(self, name: str, params: dict) -> dict:
+        from core import authoring, pipeline_bridge as bridge
+        lib = bridge.library()
+        sc = lib.local().get(name)
+        if sc is None:
+            return {"ok": False, "error": f"no script {name!r}"}
+        unknown = set(params or {}) - set(sc.params)
+        if unknown:
+            return {"ok": False, "error": f"unknown params {sorted(unknown)}"}
+        sc.params.update({k: str(v) for k, v in (params or {}).items()})
+        authoring._write_back(lib, sc)
+        return {"ok": True}
+
+    def set_script_trust(self, name: str, trust: str) -> dict:
+        from core import authoring, pipeline_bridge as bridge
+        from script.schema import Trust
+        lib = bridge.library()
+        sc = lib.local().get(name)
+        if sc is None or trust not in ("draft", "trusted"):
+            return {"ok": False, "error": "unknown script or trust level"}
+        sc.trust = Trust(trust)
+        authoring._write_back(lib, sc)
+        return {"ok": True}
+
+    def set_script_listed(self, name: str, listed: bool) -> dict:
+        from core import authoring, pipeline_bridge as bridge
+        lib = bridge.library()
+        if name not in lib.local():
+            return {"ok": False, "error": f"no script {name!r}"}
+        authoring.mark(lib, name, listed=bool(listed), note="")
+        return {"ok": True}
+
+    def delete_script(self, name: str) -> dict:
+        from core import pipeline_bridge as bridge
+        try:
+            dest = bridge.library().delete(name)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "moved_to": str(dest)}
+
     def provider_status(self) -> dict:
         have = False
         try:
@@ -1274,6 +1431,14 @@ class Agent:
 
         self._say("system", f"Working on: {task}")
         self._refresh_border()          # blue: running, thinking
+        # "cancel" from Telegram (or a chat a script names) stops the task
+        # at ANY point - not only while a step happens to wait for a reply.
+        try:
+            from core.cancel_watch import CancelWatch
+            self._cancel_watch = CancelWatch(self._remote_cancel).start()
+        except Exception:
+            self._cancel_watch = None
+        self._last_result = {"text": "", "error": True}
         try:
             outcome = self._route(task)
             if outcome is not None and outcome.kind in ("done", "stopped"):
@@ -1289,6 +1454,15 @@ class Agent:
                 return
             prompt = outcome.prompt if outcome is not None else ""
             asyncio.run(self._drive(task, prompt=prompt))
+            if outcome is not None and outcome.script and self._engine:
+                # Claude finished what a script could not: keep its fix.
+                try:
+                    self._engine.save_back(outcome, self._last_result["text"],
+                                           not self._last_result["error"]
+                                           and not self._cancel.is_set())
+                except Exception as e:
+                    self._say("system", f"(could not save Claude's fix: "
+                                        f"{type(e).__name__}: {e})")
         except asyncio.CancelledError:
             # Not ours (ours is absorbed in _consume). Still end the run in
             # order rather than killing the thread with a traceback.
@@ -1304,6 +1478,10 @@ class Agent:
             else:
                 self._say("error", f"{type(e).__name__}: {e}")
         finally:
+            if self._cancel_watch is not None:
+                self._cancel_watch.stop()
+                self._cancel_watch = None
+            self._engine = None
             watchdog.finish(self._task_id, ok=True)
             self._engine_status = {"state": "idle"}
             if self.arbiter:
@@ -1329,20 +1507,28 @@ class Agent:
         engine itself hands the task to Claude, which is where it would
         have gone without the engine at all.
         """
-        if not self.settings.get("scripts_first", True):
+        if not self.settings.get("scripts_first", True) and not self._forced:
             return None
         try:
             from core.engine import ScriptEngine
             eng = ScriptEngine(
                 self.settings, self._say,
-                set_status=lambda st: setattr(self, "_engine_status",
-                                              st.as_dict()),
-                set_current=self._set_current_tool)
-            return eng.handle(task)
+                set_status=lambda st: setattr(self, "_engine_status", st),
+                set_current=self._set_current_tool,
+                cancel_watch=self._cancel_watch)
+            self._engine = eng
+            forced, self._forced = self._forced, None
+            return eng.handle(task, forced=forced)
         except Exception as e:
             self._say("system", f"Script engine error ({type(e).__name__}: "
                                 f"{e}) — handing the task to Claude.")
             return None
+
+    def _remote_cancel(self, reason: str) -> None:
+        """A 'cancel' from outside the machine: same as pressing Stop."""
+        if self.running and not self._cancel.is_set():
+            self._say("system", f"Cancelled — {reason}.")
+            self.stop_task()
 
     def _set_current_tool(self, cur: dict | None) -> None:
         self._current = cur
@@ -1566,6 +1752,8 @@ class Agent:
                     learn_rate(self._usage.get("model", ""),
                                _weighted_tokens(self._usage), float(cost))
             body = getattr(msg, "result", "") or "Done."
+            self._last_result = {"text": body,
+                                 "error": bool(getattr(msg, "is_error", False))}
             self._say("result", body)
             hint = explain_provider_error(body)
             if hint:

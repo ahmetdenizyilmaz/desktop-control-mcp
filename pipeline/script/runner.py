@@ -66,6 +66,10 @@ def _text_only(sel: Selector) -> bool:
 #: How long to keep looking for something that should appear.
 POLL_S = 0.35
 
+#: Steps that change the screen - what "since the last action" counts from.
+_ACTING = ("click", "double_click", "right_click", "type", "key", "drag",
+           "scroll", "move", "open", "focus")
+
 #: After an action, how long to let the screen settle before verifying.
 #: Below this a `expect:` reads the page as it was; much above it and every
 #: step pays for the slowest case.
@@ -162,6 +166,40 @@ class Report:
         return "\n".join(lines)
 
 
+def _no_phase(kind: str, info: dict) -> None:
+    return None
+
+
+@dataclass
+class RunHooks:
+    """How a host watches a run and bends its waits. Every default is a
+    no-op, so a runner without a host behaves exactly as it always did.
+
+    phase(kind, info)        what is happening: step_start, step_end, acted,
+                             wait_begin, wait_end, confirm_begin,
+                             confirm_end, pick, pick_unsure, rescue_begin,
+                             rescue_end, assist_round
+    hold() -> seconds        block while the host is paused; returns how
+                             long, so a wait's deadline moves by that much -
+                             a pause must not eat the time a step had left
+    patience(elapsed, timeout) -> "keep" | "extend" | "fail"
+                             asked on every poll of a wait for something to
+                             appear. "fail" gives up early (the screen has
+                             been dead still, so it will not appear); at the
+                             deadline "extend" buys two more seconds (the
+                             screen is still busy loading)
+    wait_expired(waited) -> "keep" | "fail"
+                             a chat wait ran out. A person answering from
+                             their phone is not a stuck step, so a host can
+                             keep waiting and handle reminding them itself
+    """
+
+    phase: Callable[[str, dict], None] = _no_phase
+    hold: Callable[[], float] = lambda: 0.0
+    patience: Callable[[float, float], str] = lambda elapsed, timeout: "keep"
+    wait_expired: Callable[[float], str] = lambda waited: "fail"
+
+
 class Runner:
     """Executes a resolved script.
 
@@ -185,7 +223,8 @@ class Runner:
                  dry_run: bool = False,
                  honour_trust: bool = True,
                  rescue_tries: int = 1,
-                 skip_items: "set[str] | None" = None) -> None:
+                 skip_items: "set[str] | None" = None,
+                 hooks: RunHooks | None = None) -> None:
         self.r = resolved
         self.watcher = watcher
         self.act = actuator
@@ -215,6 +254,7 @@ class Runner:
         self.rescue_tries = max(1, int(rescue_tries))
         #: `for_each` items already done by an earlier, interrupted run.
         self.skip_items = set(skip_items or ())
+        self.hooks = hooks or RunHooks()
         #: Set by a `wait_message` with `authorizes: true`: the person wrote
         #: the go-ahead in their own chat. Unlocks the commit guard.
         self.authorized = ""
@@ -261,6 +301,7 @@ class Runner:
             raise Stopped()
 
         t0 = time.time()
+        self.hooks.phase("step_start", {"where": where, "do": step.do})
         try:
             detail = self._dispatch(step, values, where, depth)
         except Stopped:
@@ -292,6 +333,8 @@ class Runner:
         ms = (time.time() - t0) * 1000
         self._tally(step)
         self._record(Outcome(where, step.do, detail, True, ms))
+        self.hooks.phase("step_end", {"where": where, "do": step.do,
+                                      "ok": True})
 
     def _tally(self, step: Step) -> None:
         """Count what verifiably went in. Only after the step's own check."""
@@ -332,8 +375,12 @@ class Runner:
         for attempt in range(self.rescue_tries):
             if self.helper.budget <= 0:
                 break
+            self.hooks.phase("rescue_begin", {"where": where,
+                                              "try": attempt + 1,
+                                              "of": self.rescue_tries})
             got = self._rescue_once(step, values, where, depth, error,
                                     history, attempt)
+            self.hooks.phase("rescue_end", {"where": where, "ok": bool(got)})
             if got:
                 return got
         return ""
@@ -426,6 +473,10 @@ class Runner:
         self.report.outcomes.append(outcome)
         if self.on_step:
             self.on_step(outcome)
+        if not outcome.ok and not outcome.skipped:
+            self.hooks.phase("step_failed", {"where": outcome.where,
+                                             "do": outcome.do,
+                                             "detail": outcome.detail})
 
     def _dispatch(self, step: Step, values: dict[str, str], where: str,
                   depth: int) -> str:
@@ -433,6 +484,11 @@ class Runner:
         if handler is None:
             raise ScriptError(f"{where}: no handler for {step.do!r}")
         detail = handler(step, values, where, depth)
+        if step.do in _ACTING and not self.dry_run:
+            # Stamped between the action and its check, so "nothing has
+            # changed since the last action" is measured from the right
+            # moment.
+            self.hooks.phase("acted", {"where": where, "do": step.do})
         self._verify(step, values, where)
         return detail
 
@@ -674,9 +730,13 @@ class Runner:
         try:
             key, margin = self._chooser(goal, reject, options)
         except choose_mod.NoChoice as exc:
+            self.hooks.phase("pick_unsure", {"where": where,
+                                             "why": str(exc)})
             raise StepFailed(f"could not choose between {len(cands)} "
                              f"candidates: {exc}") from exc
         self.chose += 1
+        self.hooks.phase("pick", {"where": where, "margin": margin,
+                                  "n": len(cands)})
         if margin < pick.min_margin and pick.on_unsure == "fail":
             # Deliberately a failure, not a quiet fallback to the page's
             # first result. "I cannot tell these apart" and "the first is
@@ -698,10 +758,15 @@ class Runner:
         Forces a fresh look each round: the Watcher's fingerprint cache is
         exactly wrong here, because waiting IS waiting for a change.
         """
-        deadline = time.time() + timeout
+        t0 = time.time()
+        deadline = t0 + timeout
         while True:
             if self.should_stop():
                 raise Stopped()
+            paused = self.hooks.hold()
+            if paused:
+                deadline += paused
+                t0 += paused
             # The fast path matters MORE here than anywhere else, because
             # this loop pays the cost once per poll rather than once per
             # step. A `wait_for` that missed twice used to cost two full
@@ -720,8 +785,17 @@ class Runner:
                     return res.best
                 if not present and not res.matches:
                     return True
-            if time.time() >= deadline:
+            verdict = self.hooks.patience(time.time() - t0, timeout)
+            if verdict == "fail":
+                # The host saw a dead-still screen: whatever this waits for
+                # is not coming, and waiting out the full timeout would only
+                # delay the rescue.
                 return None if present else False
+            if time.time() >= deadline:
+                if verdict == "extend":
+                    deadline = time.time() + 2.0
+                else:
+                    return None if present else False
             time.sleep(POLL_S)
 
     # -- the guard ---------------------------------------------------------
@@ -752,7 +826,13 @@ class Runner:
                 + " — no confirmation handler is wired up, so it was not "
                   "clicked")
         self._show("blocked", el)
-        if not self.confirm(word, el):
+        self.hooks.phase("confirm_begin", {"word": word, "name": el.name,
+                                           "where": where})
+        try:
+            ok = self.confirm(word, el)
+        finally:
+            self.hooks.phase("confirm_end", {"where": where})
+        if not ok:
             raise StepFailed(f"{el.name!r} ({word!r}) was refused")
 
     # -- actions -----------------------------------------------------------
@@ -986,6 +1066,7 @@ class Runner:
         while time.time() < deadline:
             if self.should_stop():
                 raise Stopped()
+            deadline += self.hooks.hold()
             time.sleep(min(POLL_S, max(0.0, deadline - time.time())))
         return f"waited {step.seconds}s"
 
@@ -1056,14 +1137,32 @@ class Runner:
         if first is None:
             raise StepFailed("the chat is not in front, so it cannot be read")
         base_w, base_c = self._tally_chat(first, watch)
-        deadline = time.time() + step.timeout
+        reason = (" / ".join(words) if words else "a code")
+        self.hooks.phase("wait_begin", {"reason": f"'{reason}' in the chat",
+                                        "where": where})
+        try:
+            return self._wait_message_loop(step, values, where, words, stops,
+                                           watch, base_w, base_c)
+        finally:
+            self.hooks.phase("wait_end", {"where": where})
+
+    def _wait_message_loop(self, step, values, where, words, stops, watch,
+                           base_w, base_c) -> str:
+        t_start = time.time()
+        deadline = t_start + step.timeout
         while True:
             if self.should_stop():
                 raise Stopped()
             time.sleep(1.0)
+            # No hold() here, on purpose: reading a chat touches nothing, so
+            # a paused run keeps LISTENING. An answer that arrives while
+            # paused is not lost - the next action waits out the pause.
             if time.time() >= deadline:
-                raise StepFailed(f"no {list(words) or 'code'} within "
-                                 f"{step.timeout:g}s")
+                if self.hooks.wait_expired(time.time() - t_start) == "keep":
+                    deadline = time.time() + 60
+                else:
+                    raise StepFailed(f"no {list(words) or 'code'} within "
+                                     f"{step.timeout:g}s")
             lines = self._chat_text()
             if lines is None:
                 continue              # someone else's window is in front
@@ -1091,9 +1190,6 @@ class Runner:
             # re-base on the lower number so the next arrival still counts.
             base_w = {w: min(base_w[w], now_w[w]) for w in watch}
             base_c = {c: min(n, now_c.get(c, 0)) for c, n in base_c.items()}
-            if time.time() >= deadline:
-                raise StepFailed(f"no {list(words) or 'code'} within "
-                                 f"{step.timeout:g}s")
 
     def _do_assist(self, step, values, where, depth) -> str:
         """Reach a goal on a page nobody scripted, a few steps at a time.
@@ -1111,6 +1207,8 @@ class Runner:
             if self.should_stop():
                 raise Stopped()
             self._show("thinking")
+            self.hooks.phase("assist_round", {"where": where, "round": r + 1,
+                                              "of": step.rounds})
             plan = self.helper.rescue(goal=goal, error="",
                                       scene=self._scene_rows(),
                                       history=history)
@@ -1173,6 +1271,12 @@ class Runner:
         for n, item in enumerate(items):
             if self.should_stop():
                 raise Stopped()
+            if item in self.skip_items:
+                # Done by an earlier run of this same task; each iteration
+                # re-establishes its own state, so skipping one is safe.
+                self.report.items[item] = True
+                done += 1
+                continue
             scope = dict(values)
             scope[name] = item
             self._last_pick = None

@@ -105,6 +105,17 @@ h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3
   padding:14px 16px;margin-bottom:11px;max-width:760px}
 .card h3{margin:0 0 5px;font-size:14px;font-weight:600}
 .card p{margin:0;color:var(--ink2);font-size:12.5px;line-height:1.5}
+.sgroup{margin:4px 0 16px}
+.sgroup > h3{font-size:12px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--ink3);margin:0 0 8px;font-weight:650}
+.sbadge{font-size:11px;padding:2px 7px;border-radius:9px;border:1px solid var(--line);
+  color:var(--ink2);margin-left:5px;white-space:nowrap}
+.sbadge.on{border-color:#3a6;color:#8d8}
+.sbadge.warn{border-color:var(--warn);color:var(--warn)}
+.ssteps{font-family:var(--mono);font-size:11.5px;color:var(--ink2);white-space:pre-wrap;
+  background:#0c131d;border-radius:8px;padding:9px 11px;margin-top:8px;max-height:320px;overflow:auto}
+.sparams{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.sparams input{flex:1;min-width:160px}
 .stat{display:flex;justify-content:space-between;font-family:var(--mono);
   font-size:12px;padding:4px 0;color:var(--ink2);border-bottom:1px solid #1c2736}
 .stat:last-child{border-bottom:none}
@@ -141,6 +152,7 @@ input::placeholder{color:var(--ink3)}
   <span class="spacer"></span>
   <span class="meta tokens" id="tokens" title="Tokens used by the current or last task"></span>
   <span class="tab sel" data-pane="task">Task</span>
+  <span class="tab" data-pane="scripts">Scripts</span>
   <span class="tab" data-pane="jobs">Saved jobs</span>
   <span class="tab" data-pane="schedule">Schedule</span>
   <span class="tab" data-pane="settings">Settings</span>
@@ -195,6 +207,19 @@ input::placeholder{color:var(--ink3)}
         <span class="hint">Press <b>ESC twice</b> at any time to abort · clicking or
           typing pauses it</span>
       </div>
+    </div>
+  </div>
+
+  <!-- SCRIPTS -->
+  <div class="pane" id="pane-scripts">
+    <div class="body-pad">
+      <h2>Scripts by website and app</h2>
+      <p class="hint" style="margin:-4px 0 14px">
+        What it has learned to do. Jev picks one of these for a task before any
+        Claude turn; a new task gets a script written by Claude, saved here once it
+        works. <b>Jev</b> = offered to Jev · <b>draft</b> asks before any
+        buy/pay/send click, <b>trusted</b> does not in Fully automated mode.</p>
+      <div id="scripts"><div class="empty">Loading…</div></div>
     </div>
   </div>
 
@@ -404,6 +429,7 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".pane").forEach(x => x.classList.remove("sel"));
   t.classList.add("sel");
   document.getElementById("pane-" + t.dataset.pane).classList.add("sel");
+  if (t.dataset.pane === "scripts") renderScripts();
 });
 
 document.querySelectorAll(".ex").forEach(e => e.onclick = () => {
@@ -434,6 +460,10 @@ function render(state) {
     const eng = state.engine || {};
     document.getElementById("nowtool").textContent =
       state.paused ? "Paused — nothing is being touched"
+      : eng.waiting_for ? `Waiting for you: ${eng.waiting_for}`
+          + ` · ${fmt(Date.now()/1000 - eng.since)}`
+          + (eng.reminded ? " · reminded" : ` · reminder at ${fmt(eng.remind_at - eng.since)}`)
+          + ` · pauses at ${fmt(eng.pause_at - eng.since)}`
       : c && c.tool === "script" ? `script ${eng.script || c.detail}`
           + (eng.detail ? ` · ${eng.detail}` : "")
       : c ? `${c.tool}(${c.detail})`
@@ -613,7 +643,8 @@ function render(state) {
     : "";
 }
 
-const esc = s => (s ?? "").replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+const esc = s => String(s ?? "").replace(/[<>&"']/g, c =>
+  ({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = s => { s = Math.round(s || 0);
   return s < 60 ? `${s}s` : `${Math.floor(s/60)}m ${String(s%60).padStart(2,"0")}s`; };
 const fmtTok = n => n >= 1e6 ? (n/1e6).toFixed(1)+"M"
@@ -772,6 +803,84 @@ document.getElementById("jev-test").onclick = () =>
 document.getElementById("claude-test").onclick = () =>
   runTest("claude-test", "claude-msg", () => api().test_claude(),
           "Asking Claude to reply OK (can take ~10–30 s)…");
+
+// -- Scripts tab ---------------------------------------------------------------
+const openSteps = new Set();
+async function renderScripts() {
+  let data;
+  try { data = await api().list_scripts(); } catch (e) { return; }
+  const box = document.getElementById("scripts");
+  const errs = (data.errors || []).map(e =>
+    `<div class="card" style="border-color:var(--warn)"><p>Could not read: ${esc(e)}</p></div>`).join("");
+  const groups = (data.groups || []).map(g => `
+    <div class="sgroup"><h3>${esc(g.site)} · ${g.scripts.length}</h3>
+    ${g.scripts.map(sc => scriptCard(sc)).join("")}</div>`).join("");
+  box.innerHTML = errs + (groups || `<div class="empty">No scripts yet. Give it a task:
+    Claude writes a script for it, and it is saved here once it works.</div>`);
+  for (const n of openSteps) showSteps(n, true);
+}
+function scriptCard(sc) {
+  const id = sc.name.replace(/[^a-z0-9]/gi, "_");
+  const params = Object.entries(sc.params || {});
+  const badges = [
+    sc.jev ? `<span class="sbadge on" title="Jev may pick this for a task">Jev</span>`
+           : `<span class="sbadge" title="Not offered to Jev (a building block, or hidden)">not in Jev</span>`,
+    `<span class="sbadge ${sc.trust === "trusted" ? "on" : ""}">${sc.trust}</span>`,
+    sc.authored ? `<span class="sbadge">written by Claude</span>` : "",
+    sc.patched ? `<span class="sbadge">fixed by Claude</span>` : "",
+    sc.verified === false ? `<span class="sbadge warn">not verified yet</span>` : "",
+    sc.runs ? `<span class="sbadge">${sc.ok_runs}/${sc.runs} runs ok</span>` : "",
+  ].join("");
+  return `<div class="card" id="sc-${id}">
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+      <h3 style="margin:0">${esc(sc.name)}</h3><span class="hint">v${sc.version} · ${sc.steps} steps</span>
+      <span class="spacer"></span>${badges}</div>
+    <p style="margin-top:5px">${esc(sc.description || "")}</p>
+    ${sc.note ? `<p class="hint">${esc(sc.note)}</p>` : ""}
+    ${params.length ? `<div class="sparams">${params.map(([k, v]) =>
+      `<input data-p="${esc(k)}" placeholder="${esc(k)}${v ? "" : " (required)"}" value="${esc(v)}">`).join("")}</div>` : ""}
+    <div style="margin-top:9px;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="primary" onclick="runScript('${sc.name}','${id}')">Run</button>
+      <button onclick="showSteps('${sc.name}')">Steps</button>
+      ${params.length ? `<button onclick="saveParams('${sc.name}','${id}')">Save as defaults</button>` : ""}
+      <button onclick="setTrust('${sc.name}','${sc.trust === "trusted" ? "draft" : "trusted"}')">
+        ${sc.trust === "trusted" ? "Mark draft" : "Mark trusted"}</button>
+      <button onclick="setListed('${sc.name}',${!sc.jev})">${sc.jev ? "Hide from Jev" : "Offer to Jev"}</button>
+      <button onclick="delScript('${sc.name}')" style="margin-left:auto">Delete</button>
+    </div>
+    <div id="steps-${id}"></div></div>`;
+}
+function paramsOf(id) {
+  const out = {};
+  document.querySelectorAll(`#sc-${id} [data-p]`).forEach(i => out[i.dataset.p] = i.value);
+  return out;
+}
+window.runScript = async (name, id) => {
+  const r = await api().run_script(name, paramsOf(id));
+  if (!r.ok) { alert(r.error); return; }
+  document.querySelector('.tab[data-pane=task]').click(); poll();
+};
+window.saveParams = async (name, id) => {
+  const r = await api().save_script_params(name, paramsOf(id));
+  if (!r.ok) alert(r.error); renderScripts();
+};
+window.setTrust = async (name, t) => { await api().set_script_trust(name, t); renderScripts(); };
+window.setListed = async (name, on) => { await api().set_script_listed(name, on); renderScripts(); };
+window.delScript = async name => {
+  if (!confirm(`Delete ${name}? It is moved to the trash folder, not erased.`)) return;
+  const r = await api().delete_script(name); if (!r.ok) alert(r.error); renderScripts();
+};
+window.showSteps = async (name, keepOpen) => {
+  const id = name.replace(/[^a-z0-9]/gi, "_");
+  const el = document.getElementById("steps-" + id);
+  if (!el) return;
+  if (el.innerHTML && !keepOpen) { el.innerHTML = ""; openSteps.delete(name); return; }
+  const r = await api().get_script(name);
+  if (!r.ok) { el.innerHTML = `<p class="hint">${esc(r.error)}</p>`; return; }
+  openSteps.add(name);
+  el.innerHTML = `<div class="ssteps">${r.lines.map((l, i) => esc(l)).join("\n")}</div>
+    <p class="hint" style="margin-top:5px">${esc(r.path)}</p>`;
+};
 
 document.getElementById("or-save").onclick = async () => {
   const el = document.getElementById("or-key");
