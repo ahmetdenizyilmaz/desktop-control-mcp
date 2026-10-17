@@ -1,0 +1,65 @@
+{
+  "name": "python-org/open-menu-link",
+  "version": 1,
+  "description": "Open python.org in Chrome and click the Jobs link in the site's top menu.",
+  "params": {
+    "url": "https://www.python.org/",
+    "link": "Jobs",
+    "page": "Python Job Board"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "python",
+    "python.org",
+    "jobs",
+    "python jobs",
+    "job board",
+    "menu link",
+    "open link",
+    "python iş ilanları",
+    "iş ilanı"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open https://www.python.org/ and click the \"Jobs\" link in the site menu. This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "steps": [
+    {
+      "do": "open",
+      "app": "chrome",
+      "url": "{url}",
+      "window": "Python.org",
+      "timeout": 45.0,
+      "expect": {
+        "text": "Welcome to Python.org",
+        "kind": "tab"
+      }
+    },
+    {
+      "do": "call",
+      "script": "browser/dismiss",
+      "optional": true
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "{link}",
+        "kind": "link",
+        "match": "exact",
+        "nth": 1,
+        "area": "content"
+      },
+      "expect": {
+        "text": "{page}",
+        "kind": "tab"
+      },
+      "note": "On python.org, 'Jobs' sits in the top network bar (Python, PSF, Docs, PyPI, Jobs, Community) and goes to /jobs/, whose title is 'Python Job Board | Python.org'."
+    },
+    {
+      "do": "focus",
+      "window": "{page}",
+      "timeout": 15.0,
+      "note": "Leaves Chrome open on the Jobs page. Nothing is closed, submitted or saved."
+    }
+  ]
+}

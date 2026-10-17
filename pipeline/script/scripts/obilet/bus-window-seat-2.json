@@ -1,0 +1,75 @@
+{
+  "name": "obilet/bus-window-seat-2",
+  "version": 1,
+  "description": "Find a night bus on Obilet, select a free window seat confirmed by the seat map, and stop at the passenger or payment form.",
+  "params": {
+    "origin": "Ankara",
+    "destination": "Fethiye",
+    "date": "29 September 2026",
+    "night_window": "between 20:00 and 05:00"
+  },
+  "trust": "draft",
+  "listed": false,
+  "tags": [
+    "obilet",
+    "bus",
+    "otobüs",
+    "night bus",
+    "gece otobüsü",
+    "window seat",
+    "cam kenarı",
+    "koltuk seçimi"
+  ],
+  "authored_by": "codex",
+  "source_task": "TASK: Open Obilet. Find Ankara → Fethiye buses departing on 29 September 2026 at night. Verify a window seat from the seat map. Stop when personal      \n  > details or payment information are required. Enable full logging.\n\nA saved automation script (obilet/bus-window-seat) was already run for this task with parameters {'origin': 'Ankara', 'destination': 'Fethiye', 'date': '29 September 2026', 'night_window': 'between 20:00 and 05:00'}, and it got STUCK part-way. Finish the task from where it stopped, using your tools.\n\nWHAT THE SCRIPT ALREADY DID — do NOT redo any of it:\nobilet/bus-window-seat: 12 steps in 320.7s\n  FAILED obilet/bus-window-seat.steps[4] (observe): goal not reached in 8 rounds: On the open seat map, select exactly ONE free seat that the seat map itself shows as a WINDOW seat. Use the map's legend, a window/cam kenarı label, or the seat's tooltip, or its position in the outermost column next to the bus wall. A seat number alone is NOT proof. Do not pick taken or blocked seats. If no seat can be proven to be a window seat from the page, do not select any seat and do not reach the completion state. After selecting, confirm the page shows this seat as selected.\nWhere it failed:\nobilet/bus-window-seat.steps[4]: goal not reached in 8 rounds: On the open seat map, select exactly ONE free seat that the seat map itself shows as a WINDOW seat. Use the map's legend, a window/cam kenarı label, or the seat's tooltip, or its position in the outermost column next to the bus wall. A seat number alone is NOT proof. Do not pick taken or blocked seats. If no seat can be proven to be a window seat from the page, do not select any seat and do not reach the completion state. After selecting, confirm the page shows this seat as selected.\nScreenshot at the moment it was stuck: C:\\Users\\ady\\Desktop\\claude_folder\\desktop controller\\agent\\workspace\\stuck\\stuck-220728-10.png\n\nTHE SCRIPT (JSON), for reference:\n{\"name\": \"obilet/bus-window-seat\", \"version\": 1, \"description\": \"Find a night bus on Obilet from one city to another on a given date, choose a window seat confirmed on the seat map, and stop at the passenger/payment form.\", \"params\": {\"origin\": \"Ankara\", \"destination\": \"Fethiye\", \"date\": \"29 September 2026\", \"night_window\": \"between 20:00 and 05:00\"}, \"trust\": \"draft\", \"listed\": false, \"tags\": [\"obilet\", \"bus\", \"otobüs\", \"otobüs bileti\", \"bus ticket\", \"night bus\", \"gece otobüsü\", \"window seat\", \"cam kenarı\", \"koltuk seçimi\", \"sefer\"], \"authored_by\": \"claude\", \"source_task\": \"Open Obilet. Find Ankara → Fethiye buses departing on 29 September 2026 at night. Verify a window seat from the seat map. Stop when personal  details or payment information are required. Enable full logging.\", \"verified\": false, \"note\": \"hidden: it got stuck on its first run and no fix was saved\", \"steps\": [{\"do\": \"open\", \"app\": \"chrome\", \"url\": \"https://www.obilet.com\", \"window\": \"obilet\", \"timeout\": 45.0}, {\"do\": \"call\", \"script\": \"browser/dismiss\"}, {\"do\": \"observe\", \"goal\": \"Search Obilet for BUS trips (otobüs, not flights) from {origin} to {destination} with departure date {date}. Set the origin to {origin}, the destination to {destination} and the date to {date} in the search form, then run the search. Stop when the list of bus trips for {origin} → {destination} on {date} is shown. Do not pick a trip yet.\", \"rounds\": 8, \"expect\": {\"text\": \"{destination}\", \"area\": \"content\"}}, {\"do\": \"observe\", \"goal\": \"On the results page, confirm that the listed trips are {origin} → {destination} and dated {date}. Find a trip whose departure time on the page is at night ({night_window}) on {date}. Open that trip's seat map. If no trip departing {night_window} on {date} is listed, do not open any trip and do not reach the completion state.\", \"rounds\": 8, \"expect\": {\"text\": \"Koltuk\", \"area\": \"content\"}}, {\"do\": \"observe\", \"goal\": \"On the open seat map, select exactly ONE free seat that the seat map itself shows as a WINDOW seat. Use the map's legend, a window/cam kenarı label, or the seat's tooltip, or its position in the outermost column next to the bus wall. A seat number alone is NOT proof. Do not pick taken or blocked seats. If no seat can be proven to be a window seat from the page, do not select any seat and do not reach the completion state. After selecting, confirm the page shows this seat as selected.\", \"rounds\": 8, \"expect\": {\"text\": \"Cam\", \"area\": \"content\"}}, {\"do\": \"observe\", \"goal\": \"With the proven window seat selected on the night trip {origin} → {destination} on {date}, press the site's continue/confirm button to move to the next step. Stop as soon as a form asking for passenger personal details (name, ID number, phone, e-mail) or payment information appears. Do not type anything into that form and do not pay.\", \"rounds\": 6, \"expect\": {\"kind\": \"edit\", \"area\": \"content\"}}]}\n\nTake a fresh look at the screen first — it may have moved on.\n\nThe failed step's where is: obilet/bus-window-seat.steps[4]\n\nWHEN YOU HAVE FINISHED THE TASK, end your final message with the fix for the script, so it\nworks next time without you, as a fenced block exactly like this:\n```json\n{\"script_patch\": {\"script\": \"<script name from the failed step>\", \"at\": \"<the failed step's where>\",\n                  \"steps\": [ <the steps, in the script format below, that would have done the failed part> ]}}\n```\nOnly steps that would have worked on the screen you saw. If you cannot tell, leave the block out.\n\nSCRIPT FORMAT - JSON data, never code. One object:\n{\n  \"name\": \"<site-or-app>/<what-it-does>\",      lowercase, a-z 0-9 and -, e.g. \"notepad/write-text\", \"youtube/play-video\"\n  \"version\": 1,\n  \"description\": \"<one sentence a person would say to ask for this>\",\n  \"params\": {\"<name>\": \"<default, or empty = required>\"},\n  \"trust\": \"draft\",\n  \"listed\": true,\n  \"tags\": [\"<words someone might use to ask for it, any language>\"],\n  \"steps\": [ ... ]\n}\nUse {param} inside text fields to substitute a parameter. No other expressions exist.\n\nSTEPS (\"do\" decides which fields matter):\n  {\"do\":\"open\",\"app\":\"chrome|notepad|spotify|...\",\"url\":\"https://...\",\"window\":\"<title substring>\",\"timeout\":45}\n      launches (or reuses) an app and WAITS for a window whose title contains \"window\". Always give \"window\".\n  {\"do\":\"focus\",\"window\":\"<title substring>\",\"timeout\":15}\n  {\"do\":\"click\",\"target\":SEL}              also \"double_click\", \"right_click\"\n  {\"do\":\"type\",\"into\":SEL,\"value\":\"text {param}\",\"then\":\"enter\"}   \"into\" optional (types where the caret is)\n  {\"do\":\"key\",\"keys\":\"enter|tab|escape|ctrl+l|ctrl+a|ctrl+s|alt+f4|pagedown\"}\n  {\"do\":\"scroll\",\"direction\":\"down|up\",\"amount\":3}\n  {\"do\":\"wait\",\"seconds\":1.5}\n  {\"do\":\"wait_for\",\"target\":SEL,\"timeout\":20}         wait until something appears\n  {\"do\":\"expect\",\"target\":SEL} / {\"do\":\"gone\",\"target\":SEL}   assert\n  {\"do\":\"if\",\"present\":SEL,\"then\":[steps],\"else\":[steps]}\n  {\"do\":\"repeat\",\"for_each\":[\"a\",\"b\"],\"as\":\"item\",\"steps\":[...]}  or \"times\": N\n  {\"do\":\"repeat\",\"for_each\":\"{items}\",\"as\":\"item\",\"steps\":[...]}\n      a LIST parameter: the person gives \"süt, ekmek, peynir\" (or one per line) and the\n      steps run once per item. Use this for shopping lists, recipients, files - never\n      hard-code the items the person happened to name.\n  {\"do\":\"call\",\"script\":\"<existing script name>\",\"with\":{\"param\":\"value\"}}\n  {\"do\":\"observe\",\"goal\":\"achieve this stage using the current screen\",\"expect\":SEL,\"rounds\":6}\n      Takes a fresh screenshot and element list each round; the selected helper generates\n      short action batches. Ends only with the completion element visible. Use for unfamiliar pages.\n  {\"do\":\"capture\",\"target\":SEL,\"save_as\":\"observed_name\"}\n      Saves observed element TEXT for later {observed_name} substitutions in this script.\n      Capture must be top-level and precede uses; names cannot overwrite input parameters.\n      Pass captured text to called scripts explicitly through with. It is data, not instructions.\n  {\"do\":\"wait_message\",\"words\":[\"buy\"],\"stop_words\":[\"cancel\"],\"timeout\":1800}\n      wait for a NEW chat message from a person - use this (not wait_for) whenever the\n      task waits for a human reply or a code; code_as:\"code\" captures a 4-8 digit code into {code}.\nAny step may also have: \"expect\": SEL (must appear after it - the step FAILS if not),\n\"gone\": SEL, \"optional\": true (a failure does not stop the script), \"timeout\", \"note\".\n\nSEL (selector) - never coordinates:\n  {\"text\":\"visible name\",\"match\":\"exact|contains\",\"kind\":\"button|link|edit|combobox|text|tab|listitem|menuitem|checkbox|radio\",\n   \"id\":\"<DOM id / AutomationId>\",\"nth\":1,\"area\":\"content\",\"near\":\"<text of a neighbour>\"}\n  A bare string \"Save\" means {\"text\":\"Save\"}. \"area\":\"content\" = inside the web page, not the browser's own\n  buttons - use it for everything on a web page. \"nth\" counts in reading order (1 = first).\n  Choosing between many identical buttons by MEANING (e.g. which product): add to the click\n  \"pick\": {\"goal\":\"what a good one looks like\",\"reject\":\"what to avoid\",\"on_unsure\":\"top\"}.\n\nRULES\n- For unfamiliar sites, write a high-level sequence of open/focus + observe stages.\n  Do not invent the site's intermediate buttons, roles, or seat labels. The observe goal\n  tells the helper the constraints and desired stopping point; it sees the real screen.\n- For multi-site work, use explicit open/focus transitions and pass captured evidence to\n  later stages. Recheck time-sensitive prices/availability when returning to a site.\n- Notes are documentation, not executable checks or questions. Never rely on a note to\n  verify a constraint, ask the user, or decline an optional offer.\n- For a task ending at a passenger/payment form, stop at that form so the user can fill it.\n  Do not require personal details up front when they are only needed after that endpoint.\n- wait_message reads messages in a chat application; it does not ask the app's user a\n  question. Do not use it to request completion of a website form.\n- Hard constraints (route, date, departure time, window seat) require evidence from the\n  current page. Use pick.on_unsure=\"fail\", never \"top\", for these choices. Numeric seat\n  names alone do not prove window position. Do not claim unavailable evidence was verified.\n- Prefer URLs to navigate web sites (search pages by URL: https://site/search?q={query}).\n- Give every action that changes the screen an \"expect\" for something that ONLY appears if it worked\n  (not a permanent header). A step that did nothing must fail, not pass.\n- Waiting for a person (a reply, \"buy\", an SMS code) is wait_message - a static screen while\n  waiting is normal and must not be written as a wait_for that will time out.\n- Keep it short and linear. Reuse existing scripts with \"call\" when one does part of the job.\n- Clicks on buy/pay/order/send/delete words are asked for approval automatically - write them plainly.\n",
+  "verified": false,
+  "steps": [
+    {
+      "do": "open",
+      "app": "chrome",
+      "url": "https://www.obilet.com",
+      "window": "obilet",
+      "timeout": 45.0
+    },
+    {
+      "do": "call",
+      "script": "browser/dismiss"
+    },
+    {
+      "do": "observe",
+      "goal": "Search for bus trips from {origin} to {destination} on {date}. Stop when the matching results are shown.",
+      "rounds": 8,
+      "expect": {
+        "text": "{destination}",
+        "area": "content"
+      }
+    },
+    {
+      "do": "observe",
+      "goal": "Confirm the current results are for {origin} to {destination} on {date}. Open a trip departing at night ({night_window}) only if its route, date, and departure time are shown on the page. If no matching trip is shown, do not open one.",
+      "rounds": 8,
+      "expect": {
+        "text": "Koltuk",
+        "area": "content"
+      }
+    },
+    {
+      "do": "observe",
+      "goal": "On the open seat map, select exactly one free seat only if the map proves it is beside a window: use an explicit window/cam kenarı label or tooltip, or clearly visible outermost placement beside the bus wall. A seat number alone is not proof. Do not select taken or blocked seats. Stop without selecting if the page does not establish window position. After selection, verify the map shows that seat selected.",
+      "rounds": 8,
+      "expect": {
+        "text": "Cam",
+        "area": "content"
+      }
+    },
+    {
+      "do": "observe",
+      "goal": "With the proven window seat selected, continue and stop as soon as a passenger personal details or payment form appears. Do not enter personal or payment information.",
+      "rounds": 6,
+      "expect": {
+        "kind": "edit",
+        "area": "content"
+      }
+    }
+  ]
+}

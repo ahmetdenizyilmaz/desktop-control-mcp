@@ -71,7 +71,7 @@ HIDDEN = [
     "vision.query", "vision.templates", "cursor", "winocr", "numpy",
     "core.engine", "core.keys", "core.pipeline_bridge", "core.progress",
     "core.waiting", "core.cancel_watch", "core.authoring", "core.ledger",
-    "core.checkpoint", "core.quick", "core.tasklog", "core.claude_api",
+    "core.checkpoint", "core.quick", "core.tasklog", "core.claude_api", "core.codex_backend",
     # Direct Claude calls (core/claude_api) - imported inside a function.
     "anthropic",
 ]
@@ -79,7 +79,7 @@ HIDDEN = [
 PIPELINE = REPO / "pipeline"
 
 DATA = [
-    (HERE / "ui" / "app.html", "ui"),
+    (HERE / "ui", "ui"),                     # app.html AND popup.html (the question popup)
     (ICON, "assets"),
     # Shipped scripts. Copied into the data folder on first use and edited
     # there (core/pipeline_bridge.py) - the bundle itself is a temp dir.

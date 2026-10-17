@@ -70,6 +70,8 @@ class Reply:
 
 def configure(settings: dict) -> None:
     global mode
+    from . import codex_backend
+    codex_backend.configure(settings)
     mode = "cli" if (settings or {}).get("claude_transport") == "cli" else "api"
 
 

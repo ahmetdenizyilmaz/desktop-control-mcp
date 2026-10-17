@@ -1,0 +1,70 @@
+{
+  "name": "calculator/switch-mode",
+  "version": 2,
+  "description": "Open Calculator and switch it to Scientific mode using its navigation menu.",
+  "params": {
+    "mode": "Scientific"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "calculator",
+    "scientific",
+    "scientific mode",
+    "calculator mode",
+    "switch mode",
+    "hesap makinesi",
+    "bilimsel",
+    "bilimsel mod",
+    "mod değiştir"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open Calculator and switch it to Scientific mode by clicking through its navigation menu (do not use keyboard shortcuts). This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "patched_by": "claude",
+  "patched_at": "2026-10-16 02:55",
+  "steps": [
+    {
+      "do": "open",
+      "app": "calculator",
+      "window": "Calculator",
+      "timeout": 30.0,
+      "expect": {
+        "id": "TogglePaneButton"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "id": "TogglePaneButton"
+      },
+      "expect": {
+        "text": "{mode}",
+        "kind": "listitem"
+      },
+      "note": "Opens the navigation menu with the hamburger button. No keyboard shortcut is used."
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "{mode}",
+        "kind": "listitem"
+      },
+      "expect": {
+        "text": "{mode} Calculator mode",
+        "id": "Header"
+      },
+      "note": "Picks the mode from the navigation menu. The header then reads e.g. 'Scientific Calculator mode'."
+    },
+    {
+      "do": "gone",
+      "target": {
+        "text": "{mode}",
+        "kind": "listitem"
+      },
+      "timeout": 5.0,
+      "optional": true,
+      "note": "The navigation menu closes by itself after a choice. The Calculator window stays open."
+    }
+  ]
+}

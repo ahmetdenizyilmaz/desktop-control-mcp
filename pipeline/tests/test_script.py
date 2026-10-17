@@ -763,12 +763,21 @@ check("open REUSES a matching window instead of launching a second one",
 check("...and re-points the scene at it",
       w.hwnd == 777 and w._scene is None, f"hwnd={w.hwnd}")
 
-a = FakeActuator(windows={"Migros Sanal Market - Chrome": 777})
+class _Spawning(FakeActuator):
+    def launch(self, app, url):
+        self.windows["Migros Sanal Market - Chrome (new)"] = 778
+        return super().launch(app, url)
+
+    def find_windows(self, title):
+        return [h for n, h in self.windows.items() if title.lower() in n.lower()]
+
+
+a = _Spawning(windows={"Migros Sanal Market - Chrome": 777})
 rep = run_script({"name": "t", "steps": [
     {"do": "open", "app": "chrome", "window": "Migros", "reuse": False,
      "timeout": 5}]}, w, a).run()
-check("reuse:false launches anyway, for when a fresh window is the point",
-      a.log == ["launch:chrome:", "focus:777:max"], str(a.log))
+check("reuse:false launches anyway, and drives the NEW window, not the old one",
+      a.log == ["launch:chrome:", "focus:778:max"], str(a.log))
 
 a = FakeActuator(windows={})
 rep = run_script({"name": "t", "steps": [
@@ -923,6 +932,35 @@ try:
           real.click(off) is False)
     check("find_window refuses an empty title at the actuator too",
           real.find_window("") == 0)
+    # Read-only: enumerating windows touches nothing. The snapshot list
+    # must hold every drivable window and more (minimized, untitled...).
+    _every, _some = set(real.all_hwnds()), set(real.all_windows())
+    check("the before-run snapshot holds every drivable window and more",
+          _some <= _every and len(_every) > len(_some),
+          f"{len(_some)} drivable of {len(_every)}")
+    # A window an app keeps HIDDEN is not the person's: Explorer pre-creates
+    # its next window that way and `explorer.exe` just shows it, so counting
+    # it as pre-existing made every `open explorer` "find no new window".
+    # Minimized stays theirs - that window is visible, merely iconic. The
+    # probe window is a tool window (no taskbar button) parked off-screen.
+    import ctypes as _ct
+    _u = _ct.windll.user32
+    _u.CreateWindowExW.restype = _ct.c_void_p
+    _u.CreateWindowExW.argtypes = [_ct.c_uint, _ct.c_wchar_p, _ct.c_wchar_p,
+                                   _ct.c_uint, _ct.c_int, _ct.c_int, _ct.c_int,
+                                   _ct.c_int, _ct.c_void_p, _ct.c_void_p,
+                                   _ct.c_void_p, _ct.c_void_p]
+    _h = _u.CreateWindowExW(0x80, "STATIC", "runner snapshot probe",
+                            0x80000000, -10000, -10000, 8, 8,
+                            None, None, None, None)   # WS_EX_TOOLWINDOW, WS_POPUP, hidden
+    try:
+        check("a HIDDEN top-level window is not in the before-run snapshot",
+              bool(_h) and _h not in set(real.all_hwnds()), f"hwnd {_h}")
+        _u.ShowWindow(_ct.c_void_p(_h), 7)            # SW_SHOWMINNOACTIVE
+        check("...a MINIMIZED one is", _h in set(real.all_hwnds()), f"hwnd {_h}")
+    finally:
+        if _h:
+            _u.DestroyWindow(_ct.c_void_p(_h))
 except Exception as exc:
     check("the off-screen coordinate guard", False,
           f"{type(exc).__name__}: {exc}")
@@ -1500,6 +1538,390 @@ _mr = run_script({"name": "t", "steps": [
 check("an OCR misread cannot fail a text check the tree can answer",
       _mr.ok and _mw.pixel_looks >= 1 and _mw.looks >= 1,
       f"ok={_mr.ok} pixels={_mw.pixel_looks} tree={_mw.looks}")
+
+# --------------------------------------------------------------------------
+print("\nthe provider query: text labels, id AND text, kinds it cannot ask")
+# --------------------------------------------------------------------------
+from script import runner as runner_mod                      # noqa: E402
+
+_real_q = (runner_mod.query.available, runner_mod.query.find)
+_display = Element("text", "Display is 0", 10, 10, 200, 40, "uia", True, "",
+                   "CalculatorResults", 1.0, None)
+_asked = []
+
+
+def _fake_find(hwnd, aid="", name="", kinds=(), limit=60):
+    _asked.append((aid, name, kinds))
+    if aid == "CalculatorResults" or name == "Display is 0":
+        return [_display]
+    return []
+
+
+runner_mod.query.available = lambda: True
+runner_mod.query.find = _fake_find
+_qw = FakeWatcher(scene())
+_qw.hwnd = 99
+_qr = run_script({"name": "t", "steps": [{"do": "wait", "seconds": 0}]}, _qw,
+                 FakeActuator())
+_sel = lambda **k: parse({"name": "t", "steps": [{"do": "expect", "target": k}]},
+                         origin="test").steps[0].target
+h1, g1 = _qr._ask(_sel(text="Display is 0", match="exact", id="CalculatorResults"))
+check("id + the text it shows: found", h1 and g1 is _display)
+h2, g2 = _qr._ask(_sel(text="Display is 42", match="exact", id="CalculatorResults"))
+check("id + a text it does NOT show: conclusively absent (gone can pass)",
+      h2 and g2 is None)
+h3, g3 = _qr._ask(_sel(text="Display is 0", match="exact"))
+check("an exact name is asked of the provider", h3 and g3 is _display)
+h4, g4 = _qr._ask(_sel(text="Back", kind="icon"))
+check("a kind no condition can express is not answered as 'absent'",
+      h4 is False and g4 is None)
+check("'text' is a kind the provider can be asked for",
+      runner_mod.query.queryable("text") and not runner_mod.query.queryable("icon"))
+runner_mod.query.available, runner_mod.query.find = _real_q
+
+# --------------------------------------------------------------------------
+print("\nopen: the person's windows are not the run's")
+# --------------------------------------------------------------------------
+
+
+class _WinActuator(FakeActuator):
+    """Windows that exist, appear on launch, and die - with the process
+    behind each, and the ones a taskbar hides, as the real actuator sees
+    them."""
+
+    def __init__(self, windows, spawn=None, front=4242, exes=None, hidden=()):
+        super().__init__(windows=windows)
+        self.spawn, self.front, self.dead = spawn, front, set()
+        #: hwnd -> image name of the process behind it ("" = unreadable)
+        self.exes = dict(exes or {})
+        #: minimized or cloaked: a top-level handle that exists but that the
+        #: drivable list (`all_windows`) drops, as `locator.list_windows` does
+        self.hidden = set(hidden)
+        #: hwnd -> (pid, class); a test changes one to recycle the handle
+        self.ids: dict[int, tuple] = {}
+
+    def launch(self, app, url):
+        out = super().launch(app, url)
+        if self.spawn:
+            self.windows[self.spawn[0]] = self.spawn[1]
+        return out
+
+    def _drivable(self):
+        return [h for h in self.windows.values()
+                if h not in self.dead and h not in self.hidden]
+
+    def find_windows(self, title):
+        return [h for n, h in self.windows.items()
+                if title.lower() in n.lower() and h in self._drivable()]
+
+    def all_windows(self):
+        return self._drivable()
+
+    def all_hwnds(self):
+        return [h for h in self.windows.values() if h not in self.dead]
+
+    def is_window(self, h):
+        return h in self.windows.values() and h not in self.dead
+
+    def foreground_window(self):
+        return self.front
+
+    def window_exe(self, h):
+        return self.exes.get(h, "")
+
+    def window_identity(self, h):
+        return self.ids.get(h, (h, "Window"))
+
+
+def _why(rep, log=None):
+    return str(rep.failures()[0].detail if rep.failures() else (log or rep.summary()))
+
+
+_open_explorer = {"name": "t", "steps": [
+    {"do": "open", "app": "explorer", "window": "File Explorer", "timeout": 1}]}
+_wa = _WinActuator({"Downloads - File Explorer": 111},
+                   spawn=("Home - File Explorer", 222))
+_ww = FakeWatcher(scene())
+_r = run_script(_open_explorer, _ww, _wa).run()
+check("open Explorer with the person's folder window open: a NEW window is "
+      "launched and driven", _r.ok and _ww.hwnd == 222 and "launch:explorer:" in _wa.log
+      and "focus:111:max" not in _wa.log, str(_wa.log))
+_wb = _WinActuator({"Downloads - File Explorer": 111})
+_wbw = FakeWatcher(scene())
+_rb = run_script(_open_explorer, _wbw, _wb).run()
+check("…and if no new window appears, the step FAILS rather than use theirs",
+      not _rb.ok and _wbw.hwnd is None and "focus:111:max" not in _wb.log
+      and "no new window" in _why(_rb), _why(_rb, _wb.log))
+_wc = _WinActuator({"Main Page - Wikipedia - Google Chrome": 333},
+                   exes={333: "chrome.exe"})
+_wcw = FakeWatcher(scene())
+_rc = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "chrome", "url": "https://en.wikipedia.org/",
+     "window": "Wikipedia", "timeout": 1}]}, _wcw, _wc).run()
+check("a browser is still reused: the person's session is the point",
+      _rc.ok and _wcw.hwnd == 333 and not any(x.startswith("launch") for x in _wc.log),
+      str(_wc.log))
+_wd = _WinActuator({"Downloads - File Explorer": 111, "Home - File Explorer": 222},
+                   front=444)
+_wdr = run_script({"name": "t", "steps": [{"do": "wait", "seconds": 0}]},
+                  FakeWatcher(scene()), _wd)
+_wd.windows["All Control Panel Items"] = 444            # appeared during the run
+_wdr.watcher.hwnd = 222
+_wd.dead.add(222)                                        # Explorer replaced its window
+_wdr._follow_replaced()
+check("a window that replaced the one being driven is followed",
+      _wdr.watcher.hwnd == 444)
+_wdr.watcher.hwnd = 444
+_wd.dead.add(444)
+_wd.front = 111                                          # the person's window is in front
+_wdr._follow_replaced()
+check("…but never into a window the person already had",
+      _wdr.watcher.hwnd == 444)
+_we = _WinActuator({"Downloads - File Explorer": 111, "Home - File Explorer": 222})
+_wer = run_script({"name": "t", "steps": [{"do": "wait", "seconds": 0}]},
+                  FakeWatcher(scene()), _we)
+_we.windows["Wallpaper - File Explorer"] = 555
+check("focus prefers a window the run opened over one the person had",
+      _wer._pick_window("File Explorer") == 555)
+
+# -- focus: the person's window is not a fallback ---------------------------
+# Win11 Notepad opens a TAB in the window the person already has, so `open
+# notepad` correctly finds no new window; the rescue then proposed
+# {"do":"focus","window":"Notepad"} - and the person's Notepad was
+# focused, maximized and typed into.
+_fa = _WinActuator({"Untitled - Notepad": 101}, exes={101: "notepad.exe"})
+_faw = FakeWatcher(scene())
+_fr = run_script({"name": "t", "steps": [
+    {"do": "focus", "window": "Notepad", "timeout": 0.5}]}, _faw, _fa).run()
+check("focus on a window the person had open is REFUSED, not driven",
+      not _fr.ok and _fa.log == [] and _faw.hwnd is None
+      and "not the run's to use" in _why(_fr), _why(_fr, _fa.log))
+_fb = _WinActuator({"Untitled - Notepad": 101}, exes={101: "notepad.exe"})
+_fbw = FakeWatcher(scene(el("edit", "", 10, 10)))
+_fh = FakeHelper([{"why": "focus the Notepad that is open", "steps": [
+    {"do": "focus", "window": "Notepad", "reuse": True, "timeout": 0.3}]}])
+_frb = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "notepad", "window": "Notepad", "timeout": 0.3},
+    {"do": "type", "value": "hello"}]}, _fbw, _fb, helper=_fh).run()
+check("…and a rescue's `focus` cannot claim it either, even with reuse:true",
+      not _frb.ok and "focus:101:max" not in _fb.log
+      and not any(x.startswith("type") for x in _fb.log), str(_fb.log))
+_fc = _WinActuator({"Untitled - Notepad": 101}, exes={101: "notepad.exe"})
+_fcw = FakeWatcher(scene())
+_frc = run_script({"name": "t", "steps": [
+    {"do": "focus", "window": "Notepad", "reuse": True}]}, _fcw, _fc).run()
+check("the SCRIPT itself may say reuse:true and take it",
+      _frc.ok and _fc.log == ["focus:101:max"] and _fcw.hwnd == 101, str(_fc.log))
+_fd = _WinActuator({"Wikipedia - Google Chrome": 102}, exes={102: "chrome.exe"})
+_fdw = FakeWatcher(scene())
+_frd = run_script({"name": "t", "steps": [
+    {"do": "focus", "window": "Wikipedia"}]}, _fdw, _fd).run()
+check("a reusable app's window (their browser) may be focused without asking",
+      _frd.ok and _fd.log == ["focus:102:max"], str(_fd.log))
+_fe = _WinActuator({"Downloads - File Explorer": 111}, front=111,
+                   exes={111: "explorer.exe"})
+_few = FakeWatcher(scene())
+_fre = run_script({"name": "t", "params": {"title": ""}, "steps": [
+    {"do": "focus", "window": "{title}"}]}, _few, _fe).run()
+check("an empty title means the foreground - unless that is the person's window",
+      not _fre.ok and _fe.log == [] and "not the run's to use" in _why(_fre),
+      _why(_fre, _fe.log))
+_ff = _WinActuator({"Main Page - Wikipedia - Google Chrome": 333},
+                   exes={333: "chrome.exe"})
+_ffw = FakeWatcher(scene())
+_frf = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "chrome", "url": "https://en.wikipedia.org/",
+     "window": "Wikipedia", "timeout": 1},
+    {"do": "focus", "window": "Wikipedia"}]}, _ffw, _ff).run()
+check("a window an `open` reused is the run's from then on: `focus` finds it",
+      _frf.ok and _ff.log == ["focus:333:max", "focus:333:max"], str(_ff.log))
+
+# -- open without a window title: a new window, never "whatever is in front"
+_oa = _WinActuator({"Downloads - File Explorer": 111}, front=111,
+                   spawn=("Untitled - Paint", 505), exes={111: "explorer.exe"})
+_oaw = FakeWatcher(scene())
+_ora = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "paint", "timeout": 1}]}, _oaw, _oa).run()
+check("open with no window title settles on the window the launch created",
+      _ora.ok and _oaw.hwnd == 505 and "focus:111:max" not in _oa.log, str(_oa.log))
+_ob = _WinActuator({"Downloads - File Explorer": 111}, front=111,
+                   exes={111: "explorer.exe"})
+_obw = FakeWatcher(scene())
+_orb = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "paint", "timeout": 0.5}]}, _obw, _ob).run()
+check("…and when nothing new appears (a slow launch) it fails rather than "
+      "drive the window in front",
+      not _orb.ok and _obw.hwnd is None and "focus:111:max" not in _ob.log
+      and "no new window" in _why(_orb), _why(_orb, _ob.log))
+_oc = _WinActuator({"Terminal": 7, "Google - Google Chrome": 333}, front=7,
+                   exes={7: "windowsterminal.exe", 333: "chrome.exe"})
+_ocw = FakeWatcher(scene())
+_orc = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "chrome", "url": "https://example.org", "timeout": 1}]},
+    _ocw, _oc).run()
+check("a reusable app with no window title settles on ITS window, not the "
+      "terminal in front", _orc.ok and _ocw.hwnd == 333 and "focus:7:max" not in _oc.log,
+      str(_oc.log))
+_od = _WinActuator({"Downloads - File Explorer": 111}, front=111,
+                   exes={111: "explorer.exe"})
+_odw = FakeWatcher(scene())
+_odr = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "paint", "timeout": 1},
+    {"do": "open", "app": "charmap", "timeout": 0.5}]}, _odw, _od)
+_od.spawn = ("Untitled - Paint", 505)
+_ord = _odr.run()
+check("a second `open` waits for ITS window, not the one the first step opened",
+      not _ord.ok and _odw.hwnd == 505 and _od.log.count("focus:505:max") == 1
+      and _ord.outcomes[0].ok and not _ord.outcomes[1].ok, str(_od.log))
+
+# -- the before-run snapshot sees minimized windows -------------------------
+# A minimized window reports a -32000 rectangle and fails the drivable
+# list's size filter; the person's minimized Explorer, restored mid-run,
+# therefore looked like a window the run had opened.
+_ma = _WinActuator({"Downloads - File Explorer": 111}, hidden={111})
+_mar = run_script({"name": "t", "steps": [{"do": "wait", "seconds": 0}]},
+                  FakeWatcher(scene()), _ma)
+check("a window minimized at run start is in the snapshot",
+      111 in _mar._before_run and 111 not in _ma.all_windows())
+_ma.windows["Home - File Explorer"] = 222                  # the run's own
+_mar._point_at(222)
+_ma.dead.add(222)                                          # ...replaced itself
+_ma.hidden.discard(111)                                    # the person restored theirs
+_ma.front = 111
+_mar._follow_replaced()
+check("…so restoring it mid-run does not make it the run's to follow into",
+      _mar.watcher.hwnd == 222)
+
+# -- reuse is by process, not by title --------------------------------------
+_pa = _WinActuator({"Wikipedia notes - Notepad": 201},
+                   spawn=("Wikipedia - Google Chrome", 202),
+                   exes={201: "notepad.exe", 202: "chrome.exe"})
+_paw = FakeWatcher(scene())
+_pra = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "chrome", "url": "https://en.wikipedia.org/",
+     "window": "Wikipedia", "timeout": 1}]}, _paw, _pa).run()
+check("open chrome does not reuse a Notepad document titled 'Wikipedia'",
+      _pra.ok and _paw.hwnd == 202 and "focus:201:max" not in _pa.log
+      and any(x.startswith("launch") for x in _pa.log), str(_pa.log))
+_pb = _WinActuator({"Main Page - Wikipedia - Google Chrome": 333})   # exe unreadable
+_pbw = FakeWatcher(scene())
+_prb = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "chrome", "url": "https://en.wikipedia.org/",
+     "window": "Wikipedia", "timeout": 0.3}]}, _pbw, _pb).run()
+check("a window whose process cannot be read is not assumed to be the browser",
+      "focus:333:max" not in _pb.log and any(x.startswith("launch") for x in _pb.log),
+      str(_pb.log))
+_pc = _WinActuator({"Settings": 301}, exes={301: "systemsettings.exe"})
+_pcw = FakeWatcher(scene())
+_prc = run_script({"name": "t", "steps": [
+    {"do": "open", "app": "ms-settings:display", "window": "Settings",
+     "timeout": 1}]}, _pcw, _pc).run()
+check("ms-settings:<page> reuses the Settings window by its process",
+      _prc.ok and _pc.log == ["focus:301:max"], str(_pc.log))
+
+# -- a recycled handle is not the same window --------------------------------
+_ra = _WinActuator({"Home - File Explorer": 222}, front=444)
+_rar = run_script({"name": "t", "steps": [{"do": "wait", "seconds": 0}]},
+                  FakeWatcher(scene()), _ra)
+_ra.windows["Home - File Explorer"] = 222
+_rar._point_at(222)
+_ra.windows["All Control Panel Items"] = 444
+_rar._follow_replaced()
+check("a live handle with the same process and class behind it is still ours",
+      _rar.watcher.hwnd == 222)
+_ra.ids[222] = (9999, "Notepad")                           # the handle was recycled
+_rar._follow_replaced()
+check("…but the same handle number over a different process is a different "
+      "window, and the run moves on", _rar.watcher.hwnd == 444)
+
+# -- the provider query and a click: a label is not the control -------------
+_real_q2 = (runner_mod.query.available, runner_mod.query.find)
+_save_label = Element("text", "Save", 10, 10, 60, 20, "uia", True, "", "", 1.0, None)
+_save_btn = el("button", "Save", 80, 10)
+
+
+def _fake_find2(hwnd, aid="", name="", kinds=(), limit=60):
+    if name == "Save":
+        return [_save_label] if "button" not in kinds else [_save_btn]
+    return []
+
+
+runner_mod.query.available = lambda: True
+runner_mod.query.find = _fake_find2
+_qw2 = FakeWatcher(scene(_save_btn))
+_qw2.hwnd = 99
+_qr2 = run_script({"name": "t", "steps": [{"do": "wait", "seconds": 0}]}, _qw2,
+                  FakeActuator())
+h5, g5 = _qr2._ask(_sel(text="Save", match="exact"))
+check("for an `expect`, the query may answer with the text label", h5 and g5 is _save_label)
+h6, g6 = _qr2._ask(_sel(text="Save", match="exact"), clickable=True)
+check("for a CLICK it may not: a text-only answer falls through to the walk",
+      h6 is False and g6 is None)
+_qa2 = FakeActuator()
+_qrep = run_script({"name": "t", "steps": [
+    {"do": "click", "target": {"text": "Save", "match": "exact"}}]}, _qw2, _qa2).run()
+check("…and the walk clicks the button, not the caption beside it",
+      _qrep.ok and _qa2.log == ["click:Save"] and _qw2.looks == 1, f"{_qa2.log} looks={_qw2.looks}")
+runner_mod.query.available, runner_mod.query.find = _real_q2
+
+# --------------------------------------------------------------------------
+print("\nopen: what a script may launch")
+# --------------------------------------------------------------------------
+import os                                                      # noqa: E402
+import shutil                                                  # noqa: E402
+from script.runner import DesktopActuator, app_target         # noqa: E402
+
+_windir = (os.environ.get("WINDIR") or r"C:\Windows").lower()
+check("a profile app resolves", bool(app_target("notepad")))
+check("an allowlisted system program resolves by bare name, from the Windows folder",
+      app_target("charmap").lower().endswith("charmap.exe")
+      and app_target("charmap").lower().startswith(_windir), app_target("charmap"))
+check("an allowlisted Windows app URI resolves to itself",
+      app_target("ms-clock:") == "ms-clock:"
+      and app_target("ms-settings:display") == "ms-settings:display")
+check("any other ms-*: scheme is refused (ms-msdt: ran arbitrary commands)",
+      not app_target("ms-msdt:/id PCWDiagnostic") and not app_target("ms-msdt:")
+      and not app_target("ms-appinstaller:?source=https://x/y.msix"))
+check("shells and script hosts are never launched by name",
+      not any(app_target(x) for x in ("cmd", "powershell", "pwsh.exe", "mshta",
+                                      "wscript", "rundll32")))
+check("a real program that is not on the list does not resolve (mstsc)",
+      not app_target("mstsc") and not app_target("msconfig"))
+check("anything else - a path, a made-up name - does not resolve",
+      not app_target(r"C:\Windows\System32\cmd.exe") and not app_target("no-such-app-xyz")
+      and not app_target("ms-clock: & calc"))
+
+
+def _no_which(*a, **k):
+    raise AssertionError("shutil.which consulted")
+
+
+_real_which = shutil.which
+shutil.which = _no_which
+try:
+    _w1 = app_target("charmap")
+    _w2 = app_target("mstsc") or app_target("no-such-app-xyz") or app_target("calc.exe")
+    check("PATH is never searched for a bare name (the current directory comes first on it)",
+          _w1.lower().endswith("charmap.exe"), f"{_w1!r} {_w2!r}")
+    _al = DesktopActuator._alias("notepad.exe")
+    check("a moved Store app's alias is taken from its own folder, not PATH",
+          _al.lower().endswith("notepad.exe") and not DesktopActuator._alias("cmd.exe")
+          and not DesktopActuator._alias("../evil.exe"), _al)
+except AssertionError as exc:
+    check("PATH is never searched for a bare name", False, str(exc))
+finally:
+    shutil.which = _real_which
+
+import core.machine_profile as _mp                             # noqa: E402
+_real_profile = _mp.load_profile
+_mp.load_profile = lambda refresh=False: {"symbols": {
+    "APP:terminal": "C:/Windows/System32/wt.exe",
+    "APP:chrome": "C:/Program Files/Google/Chrome/Application/chrome.exe"}}
+try:
+    check("a profile entry that is a shell host is refused too (defence in depth)",
+          not app_target("terminal") and app_target("chrome").endswith("chrome.exe"))
+finally:
+    _mp.load_profile = _real_profile
 
 # --------------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)

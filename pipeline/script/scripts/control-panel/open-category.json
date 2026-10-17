@@ -1,0 +1,85 @@
+{
+  "name": "control-panel/open-category",
+  "version": 1,
+  "description": "Open Control Panel and click the System and Security category.",
+  "params": {
+    "category": "System and Security"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "control panel",
+    "system and security",
+    "security",
+    "windows settings",
+    "denetim masası",
+    "sistem ve güvenlik",
+    "güvenlik",
+    "ayarlar"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open Control Panel and click \"System and Security\". This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "steps": [
+    {
+      "do": "open",
+      "app": "explorer",
+      "window": "File Explorer",
+      "timeout": 30.0,
+      "note": "Control Panel is reached through File Explorer's address bar."
+    },
+    {
+      "do": "focus",
+      "window": "File Explorer",
+      "timeout": 15.0
+    },
+    {
+      "do": "key",
+      "keys": "ctrl+l",
+      "note": "Moves the caret into the address bar."
+    },
+    {
+      "do": "type",
+      "value": "Control Panel",
+      "then": "enter",
+      "expect": "View by"
+    },
+    {
+      "do": "focus",
+      "window": "Control Panel",
+      "timeout": 15.0
+    },
+    {
+      "do": "if",
+      "present": {
+        "text": "{category}",
+        "kind": "link"
+      },
+      "else": [
+        {
+          "do": "observe",
+          "goal": "Control Panel is showing icons instead of categories. Open the 'View by' dropdown and choose 'Category' so the category links appear. Do not open or change any setting.",
+          "rounds": 4,
+          "expect": {
+            "text": "{category}",
+            "kind": "link"
+          }
+        }
+      ]
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "{category}",
+        "kind": "link"
+      },
+      "gone": "Adjust your computer's settings"
+    },
+    {
+      "do": "focus",
+      "window": "{category}",
+      "timeout": 15.0,
+      "note": "The window title changes to the category name only if the click opened it. The window is left open."
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "name": "paint/zoom-in-twice",
+  "version": 1,
+  "description": "Open Paint and click its zoom-in button twice.",
+  "trust": "draft",
+  "listed": false,
+  "tags": [
+    "paint",
+    "mspaint",
+    "zoom in",
+    "zoom",
+    "magnify",
+    "enlarge",
+    "yakınlaştır",
+    "büyüt",
+    "zoom twice"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open Paint and click its zoom-in button twice (do not use keyboard shortcuts). This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": false,
+  "note": "hidden: it got stuck on its first run and no fix was saved",
+  "steps": [
+    {
+      "do": "open",
+      "app": "paint",
+      "window": "Paint",
+      "timeout": 45.0,
+      "expect": {
+        "text": "Zoom in",
+        "kind": "button"
+      }
+    },
+    {
+      "do": "focus",
+      "window": "Paint",
+      "timeout": 15.0
+    },
+    {
+      "do": "capture",
+      "target": {
+        "text": "%",
+        "near": "Zoom in"
+      },
+      "save_as": "zoom_start",
+      "note": "Zoom level shown before any click, so each click can be proven by the level changing."
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Zoom in",
+        "kind": "button"
+      },
+      "gone": {
+        "text": "{zoom_start}",
+        "match": "exact",
+        "near": "Zoom in"
+      },
+      "note": "First zoom-in click, using the on-screen button rather than a keyboard shortcut."
+    },
+    {
+      "do": "capture",
+      "target": {
+        "text": "%",
+        "near": "Zoom in"
+      },
+      "save_as": "zoom_after_first"
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Zoom in",
+        "kind": "button"
+      },
+      "gone": {
+        "text": "{zoom_after_first}",
+        "match": "exact",
+        "near": "Zoom in"
+      },
+      "note": "Second zoom-in click. Paint stays open and nothing is saved."
+    }
+  ]
+}

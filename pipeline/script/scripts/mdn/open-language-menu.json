@@ -1,0 +1,81 @@
+{
+  "name": "mdn/open-language-menu",
+  "version": 1,
+  "description": "Open MDN Web Docs and click its page language button so the list of languages is showing.",
+  "params": {
+    "url": "https://developer.mozilla.org/en-US/",
+    "title": "MDN",
+    "button": "English (US)",
+    "shows": "Français"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "mdn",
+    "mozilla",
+    "developer docs",
+    "language",
+    "language menu",
+    "change language",
+    "locale",
+    "dil",
+    "dil seçimi",
+    "dil menüsü"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open https://developer.mozilla.org/en-US/ and click the page language button (\"English (US)\") so the language list is showing. This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "steps": [
+    {
+      "do": "open",
+      "app": "chrome",
+      "url": "{url}",
+      "window": "{title}",
+      "timeout": 45.0
+    },
+    {
+      "do": "call",
+      "script": "browser/dismiss",
+      "optional": true
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "{button}",
+        "kind": "button",
+        "area": "content"
+      },
+      "expect": {
+        "text": "{shows}",
+        "area": "content"
+      },
+      "optional": true,
+      "note": "The language switcher in the page header; the list it opens names other languages such as Français."
+    },
+    {
+      "do": "if",
+      "present": {
+        "text": "{shows}",
+        "area": "content"
+      },
+      "else": [
+        {
+          "do": "observe",
+          "goal": "Open the page's language menu by clicking the button labelled '{button}' so the list of available languages is showing. Do not choose a language and do not leave the page. Stop as soon as the language list is open.",
+          "rounds": 6,
+          "expect": {
+            "text": "{shows}",
+            "area": "content"
+          }
+        }
+      ]
+    },
+    {
+      "do": "expect",
+      "target": {
+        "text": "{shows}",
+        "area": "content"
+      }
+    }
+  ]
+}

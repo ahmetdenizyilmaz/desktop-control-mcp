@@ -48,6 +48,7 @@ noconsole.install()
 
 import tools_sdk
 from core import channel as chan
+from core import grounding
 from core import paths
 from core import proxy
 from core.arbiter import Arbiter
@@ -108,9 +109,14 @@ DEFAULTS = {
     # before the full Claude agent takes the rest of the task over.
     "rescue_tries": 2,
     "rescue_model": "opus",
-    # No saved script fits: Claude writes one, it runs, and when it works
-    # it is saved so the same task next time needs no Claude at all.
+    # A task marked "Repeat task" that no saved script fits gets one, so
+    # the same task next time needs no Claude at all. One-off tasks never do.
     "author_scripts": True,
+    # When that script is made: "after" - the agent does the task, then
+    # saves the steps that worked, every name checked against what its
+    # tools reported; "before" - Claude writes it blind before the run
+    # (the older way: half of those got stuck on 2026-10-16).
+    "author_when": "after",
     # -- stuck vs waiting ---------------------------------------------------
     # A step whose window has not moved at all for this long after an
     # action is stuck (the rescue starts early instead of at its timeout).
@@ -128,11 +134,14 @@ DEFAULTS = {
     "decider": "jev",
     "decider_model": "claude-opus-5-5",
     # How the engine's own Claude calls (rescues, writing scripts, Claude
-    # decisions) are made: "api" straight to the model (an Anthropic key, or
-    # the OpenRouter key; seconds, cents) or "cli" through `claude -p` and
-    # the Claude login. "api" falls back to the CLI when it has no key or a
+    # decisions) are made: "cli" through `claude -p` and the Claude login
+    # (the default: no paid key is ever picked up by accident), or "api"
+    # straight to the model (an Anthropic key, or the OpenRouter key;
+    # seconds, cents), which falls back to the CLI when it has no key or a
     # call fails. The full agent that takes a task over always uses the CLI.
-    "claude_transport": "api",
+    "claude_transport": "cli",
+    "planning_engine": "claude",
+    "codex_model": "",
     # Claude writes a new script with this model.
     "author_model": "opus",
     # Pulling a task's details (a song, a text) into a script's parameters:
@@ -143,6 +152,12 @@ DEFAULTS = {
     # feed line, agent message, tool call and result, model prompt and
     # reply, question and answer, and every screenshot shown to a model.
     "log_everything": False,
+    # A click whose target no locator can name may go to a small LOCAL
+    # vision model that points at it on a picture of the window
+    # (core/grounding.py). Off by default: it is right 20–55% of the time
+    # on hard pages. Keys: enabled, url (loopback only), timeout_s,
+    # min_confidence (null = no gate), require_inside_window, dry_run.
+    "vision_grounding": dict(grounding.DEFAULTS),
     "settings_version": 2,
 }
 
@@ -160,17 +175,22 @@ SETTINGS_SCHEMA: dict[str, tuple] = {
     "watchdog_minutes": ("int", 1, 600), "stall_minutes": ("int", 1, 240),
     "browser_headless": ("bool",), "max_turns": ("int", 0, 2000),
     "scripts_first": ("bool",), "author_scripts": ("bool",),
+    "author_when": ("choice", ["after", "before"]),
     "jev_backend": ("choice", ["openrouter", "typesafe", "cloudflare"]),
     "jev_min_confidence": ("float", 0.3, 0.99),
     "rescue_tries": ("int", 0, 5), "rescue_model": ("str", 120),
     "decider": ("choice", ["jev", "claude"]), "decider_model": ("str", 120),
     "claude_transport": ("choice", ["api", "cli"]),
+    "planning_engine": ("choice", ["claude", "codex"]),
+    "codex_model": ("choice", ["", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra",
+                               "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]),
     "author_model": ("str", 120), "param_model": ("str", 120),
     "quick_model": ("str", 120), "log_everything": ("bool",),
     "no_change_seconds": ("float", 3, 120),
     "busy_grace_seconds": ("float", 0, 300),
     "remind_after_minutes": ("float", 0.5, 1440),
     "wait_limit_minutes": ("float", 1, 1440),
+    "vision_grounding": ("block", grounding.clean_settings),
 }
 
 
@@ -195,6 +215,8 @@ def _clean_value(key: str, value):
             v = str(value)
             return (True, v) if v in spec[1] else (False, f"{key} must be one "
                                                    f"of {spec[1]}")
+        if kind == "block":                      # a nested dict, own cleaner
+            return True, spec[1](value)
         v = str(value if value is not None else "").strip()
         return True, v[:spec[1]]
     except (TypeError, ValueError):
@@ -203,6 +225,16 @@ def _clean_value(key: str, value):
 
 def _migrate(s: dict) -> dict:
     """Bring an older settings file up to date - once, and in place."""
+    # Older versions accepted display names and passed them straight to the CLI.
+    model = str(s.get("codex_model") or "").strip()
+    aliases = {"luna": "gpt-6-luna", "sol": "gpt-6-sol", "astra": "gpt-6-astra"}
+    normalized = aliases.get(model.lower(), model.lower())
+    if normalized != s.get("codex_model", ""):
+        s["codex_model"] = normalized
+        try:
+            save_settings(s)
+        except Exception:
+            pass
     if int(s.get("settings_version") or 1) >= 2:
         return s
     for k in SETTINGS_SCHEMA:
@@ -547,6 +579,10 @@ class Agent:
         self.settings = load_settings()
         from core import claude_api
         claude_api.configure(self.settings)
+        # As update_settings does - or a saved vision_grounding block is
+        # inert after a restart until some setting is next changed.
+        grounding.configure(self.settings.get("vision_grounding"))
+        grounding.history_provider = lambda: tools_sdk.journal()[-grounding.HISTORY_N:]
         self.store = Store()
         self.arbiter: Arbiter | None = None
         self.feed: list[dict] = []
@@ -661,6 +697,15 @@ class Agent:
                 u["cost"] = (u.get("cost") or 0.0) + extra
                 u["extra_cost"] = extra
         return u
+
+    @staticmethod
+    def _agent_own_cost(u: dict) -> float | None:
+        """The agent's own bill for the ledger's "agent" line. _usage_view's
+        cost already includes the other parts (rescues, written scripts), so
+        booking it whole counted them twice: a 2026-10-16 run showed $11.91
+        for $7.45 of calls."""
+        own = (u.get("cost") or 0.0) - (u.get("extra_cost") or 0.0)
+        return own if own > 0 else None
 
     def _add_usage(self, usage, message_id: str | None = None) -> None:
         """Fold one message's usage into the running task total — once per
@@ -938,7 +983,10 @@ class Agent:
         self._say("system", f"Scheduled: {s.task[:70]}")
         if s.job_id:
             return self.run_job(s.job_id).get("ok", False)
-        return self.run_task(s.task).get("ok", False)
+        # A scheduled task comes back by definition: always a Repeat task.
+        # And nobody is at the window to answer a script's question.
+        return self.run_task(s.task, repeat=True,
+                             scheduled=True).get("ok", False)
 
     def list_schedules(self) -> list[dict]:
         return scheduler.status()
@@ -1239,6 +1287,23 @@ class Agent:
         r = keys.test_gemini()
         self._key_tests["gemini"] = r
         return r
+
+    def engine_login_status(self) -> dict:
+        from core.codex_backend import login_status
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(login_status, ("claude", "codex")))
+        return dict(zip(("claude", "codex"), results))
+
+    def test_codex(self) -> dict:
+        from core import codex_backend
+        codex_backend.configure(self.settings)
+        started = time.monotonic()
+        try:
+            reply = codex_backend.call("Reply only OK", timeout=60, kind="decide")
+            return {"ok": reply.strip() == "OK", "seconds": round(time.monotonic()-started, 2)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def test_claude(self) -> dict:
         """The agent's model, through the agent's provider - so a pass means
@@ -1544,9 +1609,16 @@ class Agent:
         browser.headless = bool(self.settings.get("browser_headless", True))
         watchdog.check_every_s = float(self.settings.get("watchdog_minutes", 60)) * 60
         watchdog.stall_after_s = float(self.settings.get("stall_minutes", 10)) * 60
+        grounding.configure(self.settings.get("vision_grounding"))
+        grounding.history_provider = lambda: tools_sdk.journal()[-grounding.HISTORY_N:]
         return self.settings
 
-    def run_task(self, text: str) -> dict:
+    def run_task(self, text: str, repeat: bool = False,
+                 scheduled: bool = False) -> dict:
+        """`repeat`: the person ticked "Repeat task" - keep what works as a
+        script so the next time runs without Claude (core/authoring.py).
+        `scheduled`: started by the scheduler, not a person - a script
+        short of a detail must not wait at a question nobody will see."""
         text = (text or "").strip()
         if not text:
             return {"ok": False, "error": "Describe what you want done."}
@@ -1555,6 +1627,8 @@ class Agent:
                 return {"ok": False, "error": "A task is already running."}
             self.running = True         # claimed before the thread exists
             self.current_task = text
+            self._repeat = bool(repeat)
+            self._scheduled = bool(scheduled)
             self._cancel.clear()
             tools_sdk.set_cancelled(False)
             self.feed.clear()
@@ -1700,25 +1774,47 @@ class Agent:
         try:
             outcome = self._route(task)
             if outcome is not None and outcome.kind in ("done", "stopped"):
+                self._last_result = {"text": outcome.why or outcome.kind,
+                                     "error": outcome.kind != "done"}
                 return                  # the script engine finished it
             # A custom endpoint on this machine is usually LiteLLM, and it
             # may not be up yet. Started only now - a task a saved script
             # handled never needed it - and with the vault's provider keys,
             # rather than let the CLI die on "connection refused".
-            r = self._ensure_proxy()
+            r = (None if self.settings.get("planning_engine") == "codex"
+                 else self._ensure_proxy())
             if r is not None and not r["ok"]:
                 self._say("error", f"The local endpoint is not answering: "
                                    f"{r['detail']}")
                 return
             prompt = outcome.prompt if outcome is not None else ""
+            # Repeat task, and no saved script did it: the agent saves what
+            # worked. (A stuck script's takeover patches that script instead.)
+            learn = (getattr(self, "_repeat", False)
+                     and self.settings.get("author_scripts", True)
+                     and self.settings.get("author_when", "after") == "after"
+                     and self.settings.get("planning_engine") != "codex"
+                     and (outcome is None or not outcome.script))
+            tools_sdk.set_learning(learn, task,
+                                   self.settings.get("planning_engine") or "claude")
             t_agent = time.time()
             try:
-                asyncio.run(self._drive(task, prompt=prompt))
+                asyncio.run(self._drive(task, prompt=prompt, learn=learn))
             finally:
-                u = self._usage_view()
-                self._ledger.add("agent", time.time() - t_agent,
-                                 u["cost"] if u.get("cost") else None,
-                                 u.get("model") or "")
+                saved = tools_sdk.learned()
+                tools_sdk.set_learning(False)
+                if learn and saved:
+                    self._say("system", f"Saved script {saved} from this run — "
+                                        f"next time Jev runs it without Claude. "
+                                        f"See the Scripts tab.")
+                elif learn and not self._cancel.is_set():
+                    self._say("system", "Repeat task was ticked, but Claude did "
+                                        "not save a script for it.")
+                if self.settings.get("planning_engine") != "codex":
+                    u = self._usage_view()
+                    self._ledger.add("agent", time.time() - t_agent,
+                                     self._agent_own_cost(u),
+                                     u.get("model") or "")
             if (outcome is not None and self._engine is not None
                     and self._engine.checkpoint is not None
                     and not self._last_result.get("error")
@@ -1783,6 +1879,7 @@ class Agent:
                     _tasklog.event("ledger", **(self._ledger.view()
                                                 if self._ledger else {}))
                     _tasklog.stop("stopped" if self._cancel.is_set()
+                                  else "failed" if self._last_result.get("error", True)
                                   else "finished", took + "\n" + line)
                     self._say("system", f"Full log: {log.dir}")
             except Exception:
@@ -1807,7 +1904,9 @@ class Agent:
                 cancel_watch=self._cancel_watch)
             self._engine = eng
             forced, self._forced = self._forced, None
-            return eng.handle(task, forced=forced)
+            return eng.handle(task, forced=forced,
+                              repeat=getattr(self, "_repeat", False),
+                              interactive=not getattr(self, "_scheduled", False))
         except Exception as e:
             self._say("system", f"Script engine error ({type(e).__name__}: "
                                 f"{e}) — handing the task to Claude.")
@@ -1920,7 +2019,51 @@ class Agent:
         except Exception:
             pass
 
-    async def _drive(self, task: str, prompt: str = "") -> None:
+    def _drive_codex(self, task: str, prompt: str = "") -> None:
+        """Bounded replanning through the same validated, guarded runner."""
+        from core import authoring, pipeline_bridge, codex_backend
+        from core.engine import ScriptEngine
+        codex_backend.configure(self.settings)
+        engine = self._engine or ScriptEngine(
+            self.settings, self._say, set_status=self._engine_status_changed,
+            set_current=self._set_current_tool, cancel_watch=self._cancel_watch)
+        self._engine = engine
+        context = prompt or task
+        for attempt in range(2):
+            if tools_sdk.should_stop():
+                return
+            lib = pipeline_bridge.library()
+            self._say("system", "Codex is planning the remaining task through the script runner.")
+            name, reason = authoring.author(context, lib, self.settings, say=self._say)
+            if not name:
+                self._say("error", reason)
+                self._last_result = {"text": reason, "error": True}
+                return
+            # A scheduled run has nobody at the window to ask.
+            args = engine.fill_params(lib.local()[name], task,
+                                      ask_missing=not getattr(self, "_scheduled", False))
+            if not isinstance(args, dict):
+                reason = "Task incomplete: required script parameters were not provided."
+                self._say("error", reason)
+                self._last_result = {"text": reason, "error": True}
+                return
+            runner = engine.execute(name, args, task)
+            if runner is None:
+                return
+            report = runner.report
+            text = report.summary()
+            self._say("result" if report.ok else "system", text)
+            self._last_result = {"text": text, "error": not report.ok}
+            if report.ok or report.stopped:
+                engine._finish_checkpoint("done" if report.ok else "stopped")
+                return
+            context = (task + "\nPrevious attempt:\n" + text
+                       + "\nDo not repeat successful actions. Write only remaining work.")
+
+    async def _drive(self, task: str, prompt: str = "", learn: bool = False) -> None:
+        if self.settings.get("planning_engine") == "codex":
+            await asyncio.to_thread(self._drive_codex, task, prompt)
+            return
         # Work in a scratch directory, never in the app's own source tree.
         workspace = paths.data("workspace")
         workspace.mkdir(parents=True, exist_ok=True)
@@ -2021,6 +2164,11 @@ class Agent:
             # Silence hid a genuinely broken feature during testing, so say so.
             self._say("system", f"(could not check past lessons: "
                                 f"{type(e).__name__})")
+        if learn:
+            from core import authoring
+            prompt = authoring.learn_prompt(prompt)
+            self._say("system", "Repeat task: Claude will save what works as a "
+                                "script when it is done.")
 
         await self._consume(query(prompt=prompt, options=opts))
 
@@ -2342,7 +2490,7 @@ def selftest() -> int:
         from core import keys
         s = load_settings()
         if not keys.has_jev_key(s):
-            return "no Jev key saved - scripts will be skipped"
+            return "no Jev key saved - Claude makes the quick decisions instead"
         r = keys.test_jev(s)
         if not r.get("ok"):
             raise RuntimeError(r.get("error") or "wrong answer")

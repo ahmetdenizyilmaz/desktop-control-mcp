@@ -89,6 +89,10 @@ main{flex:1;display:flex;min-height:0}
   font-size:14px;resize:none;height:74px;line-height:1.45}
 .composer textarea:focus{outline:none;border-color:var(--accent)}
 .crow{display:flex;align-items:center;gap:10px;margin-top:9px}
+.engine-pick{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink3)}
+.engine-pick select{background:#0a1018;border:1px solid var(--line);border-radius:7px;color:var(--ink);
+  padding:6px 8px;font-family:var(--sans);font-size:13px}
+.engine-pick select:disabled{opacity:.4}
 button{font-family:var(--sans);font-size:13px;font-weight:550;border:1px solid var(--line);
   background:var(--panel2);color:var(--ink);padding:8px 15px;border-radius:8px;cursor:pointer}
 button:hover{border-color:var(--accent)}
@@ -222,6 +226,14 @@ input::placeholder{color:var(--ink3)}
         <button class="primary" id="run">Run task</button>
         <button id="pause" disabled>Pause</button>
         <button class="danger" id="stop" disabled>Stop</button>
+        <!-- Same setting as Settings > Planning and fallback engine; saves at once, used from the next task. -->
+        <label class="engine-pick" title="Keep what works as a script, so next time this task runs in seconds without Claude">
+          <input type="checkbox" id="repeat"> Repeat task</label>
+        <label class="engine-pick" title="Which engine plans and takes over the next task">Engine
+          <select data-key="planning_engine" id="engine-pick">
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+          </select></label>
         <span class="spacer"></span>
         <span class="hint">Press <b>ESC twice</b> at any time to abort · clicking or
           typing pauses it</span>
@@ -235,8 +247,8 @@ input::placeholder{color:var(--ink3)}
       <h2>Scripts by website and app</h2>
       <p class="hint" style="margin:-4px 0 14px">
         What it has learned to do. Jev picks one of these for a task before any
-        Claude turn; a new task gets a script written by Claude, saved here once it
-        works. <b>Jev</b> = offered to Jev · <b>draft</b> asks before any
+        Claude turn; a new task marked <b>Repeat task</b> gets a script made by Claude
+        from the steps that worked, saved here. <b>Jev</b> = offered to Jev · <b>draft</b> asks before any
         buy/pay/send click, <b>trusted</b> does not in Fully automated mode.</p>
       <div id="scripts"><div class="empty">Loading…</div></div>
     </div>
@@ -321,6 +333,29 @@ input::placeholder{color:var(--ink3)}
       </div>
 
       <div class="card">
+        <h3>Planning and fallback engine</h3>
+        <label class="field"><span>Plans, script writing, rescues and fallback tasks (Jev stays first)</span>
+          <select data-key="planning_engine">
+            <option value="claude">Claude</option>
+            <option value="codex">Codex (uses your Codex login)</option>
+          </select></label>
+        <label class="field"><span>Codex model</span>
+          <select data-key="codex_model">
+            <option value="">Codex default</option>
+            <option value="gpt-6-luna">GPT-6 Luna</option>
+            <option value="gpt-6-sol">GPT-6 Sol</option>
+            <option value="gpt-6-astra">GPT-6 Astra</option>
+            <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+            <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
+            <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
+            <option value="gpt-5.5">GPT-5.5</option>
+          </select></label>
+        <p class="hint">Codex fallback runs validated scripts with the existing guards. Claude also supports its full tool-agent takeover. Claude model settings below apply only to Claude.</p>
+        <div class="crow"><button id="login-refresh">Refresh login status</button>
+          <button id="codex-test">Test Codex</button></div>
+        <p id="login-status" class="hint">Login status not checked yet.</p>
+        <p id="codex-msg" class="hint"></p>
+        <p class="hint">A saved login does not guarantee model access or remaining usage.</p>
         <h3>Claude <b id="claude-state" class="dim"></b></h3>
         <label class="field"><span>Model for the agent — the one that does whole tasks and takes over
           <span class="hint" id="model-count"></span></span>
@@ -410,7 +445,13 @@ input::placeholder{color:var(--ink3)}
       <div class="toggle"><input type="checkbox" data-key="scripts_first" id="eng-first">
         <label for="eng-first">Try saved scripts before asking Claude to do the whole task</label></div>
       <div class="toggle"><input type="checkbox" data-key="author_scripts" id="eng-author">
-        <label for="eng-author">When no script fits, let Claude write one and keep it for next time</label></div>
+        <label for="eng-author">For a task marked <b>Repeat task</b> that no script fits, let Claude make
+          one and keep it for next time (one-off tasks never get a script)</label></div>
+      <label class="field" style="margin-left:28px"><span>When Claude makes that script</span>
+        <select data-key="author_when" id="eng-author-when">
+          <option value="after">After doing the task — from the steps that worked (recommended)</option>
+          <option value="before">Before the task — written blind, then run (older way)</option>
+        </select></label>
       <div class="toggle"><input type="checkbox" data-key="browser_headless" id="set-headless">
         <label for="set-headless">Run the browser invisibly (falls back to visible when a site blocks it)</label></div>
       <div class="toggle"><input type="checkbox" data-key="log_everything" id="set-logall">
@@ -498,6 +539,8 @@ function render(state) {
 
   document.getElementById("run").disabled = state.running;
   document.getElementById("stop").disabled = !state.running;
+  // Switching mid-task would hand a running task's rescues to the other engine.
+  document.getElementById("engine-pick").disabled = state.running;
   const pb = document.getElementById("pause");
   pb.disabled = !state.running;
   pb.textContent = state.paused ? "Resume" : "Pause";
@@ -519,7 +562,7 @@ function render(state) {
       : c && c.tool === "script" ? `script ${eng.script || c.detail}`
           + (eng.detail ? ` · ${eng.detail}` : "")
       : c ? `${c.tool}(${c.detail})`
-      : eng.state === "routing" ? "Jev: checking saved scripts…"
+      : eng.state === "routing" ? "checking saved scripts…"
       : "thinking…";
     const secs = c && !state.paused
       ? Math.round(Date.now()/1000 - c.since) : 0;
@@ -698,9 +741,12 @@ document.getElementById("run").onclick = async () => {
   const t = document.getElementById("task").value.trim();
   if (!t) return;
   lastFeed = -1;
-  const r = await api().run_task(t);
+  const r = await api().run_task(t, document.getElementById("repeat").checked);
   if (!r.ok) alert(r.error);
   document.getElementById("task").value = "";
+  // "Repeat task" is per task, never remembered: a tick left on would make
+  // every later task pay the extra save_script turns.
+  if (r.ok) document.getElementById("repeat").checked = false;
   poll();
 };
 const stopTask = async () => { await api().stop_task(); poll(); };
@@ -791,6 +837,11 @@ function applySettings(state) {
     if (k === "model" || k === "fallback_model") return;   // fillModels owns these
     if (s[k] !== undefined) setControl(el, s[k]);
   });
+  // The task-bar picker names the model each engine will actually use.
+  const pick = document.getElementById("engine-pick");
+  const named = v => (CLAUDE_MODELS.find(([id]) => id === v) || [v, v])[1].split(" — ")[0];
+  pick.options[0].text = "Claude · " + (s.model ? named(s.model) : "default model");
+  pick.options[1].text = "Codex · " + (s.codex_model || "default model");
   const prov = s.provider || "anthropic";
   if (Date.now() - (lastEdit.provider || 0) > 3000)
     fillModels(prov, s.model ?? "", s.fallback_model ?? "");
@@ -856,11 +907,12 @@ function renderEngines(state, keys) {
   kf.placeholder = keys.jev ? "Key saved — paste a new one to replace it"
                             : jevHint[be.value] || "Jev key";
   document.getElementById("jev-state").textContent =
-    keys.jev ? "· key saved" : "· no key — saved scripts will be skipped";
+    keys.jev ? "· key saved" : "· no key — Claude decides instead (slower)";
   document.getElementById("or-state").textContent =
     keys.openrouter ? "· saved" : "· not set";
   document.getElementById("or-key").placeholder = keys.openrouter
     ? "Key saved — paste a new one to replace it" : "OpenRouter API key (sk-or-…)";
+  if (!loginChecked) { loginChecked = true; refreshLogins(); }
   document.getElementById("claude-state").textContent =
     (s.provider || "anthropic") === "anthropic" ? "· your Claude login"
       : `· through ${s.provider} (Advanced)`;
@@ -905,6 +957,25 @@ document.getElementById("jev-test").onclick = () =>
   runTest("jev-test", "jev-msg", () => api().test_decider(),
           document.getElementById("set-decider").value === "claude"
             ? "Asking Claude one question (~5–30 s)…" : "Asking Jev one question…");
+let loginChecked = false;
+async function refreshLogins() {
+  const el = document.getElementById("login-status");
+  el.textContent = "Checking login status...";
+  try {
+    const statuses = await api().engine_login_status();
+    el.textContent = Object.entries(statuses).map(([name, s]) => `${name}: ${s.detail}`).join(" | ");
+  } catch (_) { el.textContent = "Status unavailable. Try Refresh."; }
+}
+document.getElementById("login-refresh").onclick = refreshLogins;
+document.getElementById("codex-test").onclick = async () => {
+  const b = document.getElementById("codex-test"), el = document.getElementById("codex-msg");
+  b.disabled = true; el.textContent = "Testing Codex...";
+  try {
+    const r = await api().test_codex();
+    el.textContent = r.ok ? `Working (${r.seconds}s)` : (r.error || "Unexpected response");
+  } catch (_) { el.textContent = "Test failed"; }
+  finally { b.disabled = false; refreshLogins(); }
+};
 document.getElementById("claude-test").onclick = () =>
   runTest("claude-test", "claude-msg", () => api().test_claude(),
           "Asking the agent's model to reply OK (~10–30 s)…");

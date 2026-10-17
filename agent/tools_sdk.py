@@ -189,6 +189,49 @@ def _ok(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}]}
 
 
+# -- "Repeat task": the run's own script --------------------------------------
+#
+# While a task marked Repeat runs, what the tools SAW is kept - control
+# lists, page listings, labels read, windows, and the name of a step that
+# found its target - so save_script can refuse a name no tool ever reported.
+# Nothing else is: an error quotes the caller's own argument ("Could not
+# click 'Object Select'", a FAIL row), and keeping it would let a name that
+# was merely tried pass as one that was seen. save_script's own replies are
+# not kept either.
+
+_learning: dict[str, Any] = {"on": False, "task": "", "engine": "claude",
+                             "seen": [], "size": 0, "saved": None}
+_SEEN_MAX = 4_000_000
+
+
+def _observed(text: str) -> None:
+    """Record text a tool read OFF THE SCREEN as seen in this run."""
+    if _learning["on"] and text:
+        _remember_seen(text)
+
+
+def _full() -> bool:
+    """Print names and ids whole, not cut to fit a column: a Repeat task's
+    script copies them exactly, and a cut id never matches at replay."""
+    return bool(_learning["on"])
+
+
+def set_learning(on: bool, task: str = "", engine: str = "claude") -> None:
+    _learning.update(on=bool(on), task=task or "", engine=engine or "claude",
+                     seen=[], size=0, saved=None)
+
+
+def learned() -> str | None:
+    """The script save_script saved in this run, if any."""
+    return _learning["saved"]
+
+
+def _remember_seen(text: str) -> None:
+    if _learning["size"] < _SEEN_MAX:
+        _learning["seen"].append(text)
+        _learning["size"] += len(text)
+
+
 # ---------------------------------------------------------------------------
 # desktop — seeing
 # ---------------------------------------------------------------------------
@@ -201,7 +244,9 @@ async def list_windows(args: dict[str, Any]) -> dict:
     lines = [f"{len(ws)} windows open:"]
     for w in ws:
         x1, y1, x2, y2 = w["rect"]
-        lines.append(f"  {w['title'][:60]:<60} {x2-x1}x{y2-y1}")
+        title = w["title"] if _full() else w["title"][:60]
+        lines.append(f"  {title:<60} {x2-x1}x{y2-y1}")
+    _observed("\n".join(w["title"] for w in ws))
     return _ok("\n".join(lines))
 
 
@@ -257,14 +302,17 @@ async def find_controls(args: dict[str, Any]) -> dict:
     for _, n, _ in hits:
         counts[n] = counts.get(n, 0) + 1
     seen: dict[str, int] = {}
+    full = _full()
     for ctype, name, aid in hits:
         tag = ""
         if name and counts[name] > 1:
             seen[name] = seen.get(name, 0) + 1
             tag = f" [{seen[name]}/{counts[name]}]"
-        shown = name[:48 - len(tag)] + tag
-        rows.append(f"  {ctype[:20]:<20} {shown:<48} {('id=' + aid[:18]) if aid else ''}")
-    out = [f"{locator.window_title(h)} — {len(rows)} controls"
+        shown = (name if full else name[:48 - len(tag)]) + tag
+        rows.append(f"  {ctype[:20]:<20} {shown:<48} "
+                    f"{('id=' + (aid if full else aid[:18])) if aid else ''}")
+    title = locator.window_title(h)
+    out = [f"{title} — {len(rows)} controls"
            + (f" matching {needle!r}" if needle else "")
            + (f" ({unnamed} unnamed)" if unnamed else "")]
     out += rows
@@ -308,6 +356,9 @@ async def find_controls(args: dict[str, Any]) -> dict:
               if w["hwnd"] != h][:8]
     if others:
         out.append("\nOther windows open: " + " | ".join(t[:34] for t in others))
+    # Seen: the window, its controls, the other windows - not the filter
+    # word, which is the caller's own and would pass as a name on screen.
+    _observed("\n".join([title, *rows, *others]))
     return _ok("\n".join(out))
 
 
@@ -327,7 +378,9 @@ async def read_labels(args: dict[str, Any]) -> dict:
         return _ok("The display is asleep and will not wake.")
     if not labels:
         return _ok("No readable text in unnamed controls.")
-    return _ok("\n".join(f"  {lab}" for lab in labels.values()))
+    text = "\n".join(f"  {lab}" for lab in labels.values())
+    _observed(text)
+    return _ok(text)
 
 
 @tool("screenshot",
@@ -677,6 +730,7 @@ async def click(args: dict[str, Any]) -> dict:
             return _ok(f"No control labelled {name!r}.")
         r = actuator.click(el, prefer="invoke")
         _note(f"clicked {name}")
+        _observed(name)                 # found by its label: it is there
         return _ok(f"Clicked {name!r} ({r.method}).")
     try:
         index = int(args.get("index") or 0) or None
@@ -691,7 +745,16 @@ async def click(args: dict[str, Any]) -> dict:
                    f"Call find_controls(window={window!r}) to see real names.")
     which = (f" near {near!r}" if near else f" #{index}" if index else "")
     _note(f"clicked {name}{which}")
-    return _ok(f"Clicked {name!r}{which} via {res.locator_type} ({res.method}).")
+    # Found by that name - except by the vision model, which points at a
+    # picture: the name is then still the caller's guess, not a control's.
+    if res.locator_type != "vision:ground":
+        _observed(name)
+    # A vision click says whether anything visibly happened afterwards.
+    seen = ("" if res.locator_type != "vision:ground" or res.verified is None
+            else ", verified" if res.verified
+            else ", NOT verified: nothing visibly changed, look before going on")
+    return _ok(f"Clicked {name!r}{which} via {res.locator_type} "
+               f"({res.method}){seen}.")
 
 
 @tool("type_text", "Type literal text into the focused field.", {"text": str})
@@ -760,7 +823,7 @@ def _controls_snapshot(h: int, cap: int = 40) -> str:
             continue
         if not name or locator._rect_of(c) is None:
             continue
-        rows.append(f"  {ctype[:18]:<18} {name[:50]}")
+        rows.append(f"  {ctype[:18]:<18} {name if _full() else name[:50]}")
         if len(rows) >= cap:
             rows.append(f"  … first {cap} only; find_controls(filter=...) lists more")
             break
@@ -957,6 +1020,10 @@ async def do_steps(args: dict[str, Any]) -> dict:
 
     t0 = time.time()
     lines: list[str] = []
+    #: What this batch saw: the steps that found their target (not by the
+    #: vision model, whose name is the step's guess) and the control list
+    #: after a failure. A FAIL row quotes the step's own name and is not.
+    seen_rows: list[str] = []
     done, failed_at, halted = 0, 0, ""
     for i, s in enumerate(steps, 1):
         if i > 1:
@@ -971,6 +1038,8 @@ async def do_steps(args: dict[str, Any]) -> dict:
             ok, what = False, f"{type(e).__name__}: {e}"
         if ok:
             done += 1
+            if "via vision:" not in what:
+                seen_rows.append(what)
         lines.append(f"  {'ok  ' if ok else 'FAIL'} {i}. {what}")
         if not ok:
             if what == "stopped":
@@ -991,6 +1060,7 @@ async def do_steps(args: dict[str, Any]) -> dict:
     if halted:
         out.append("")
         out.append(f"{halted} ({done} of {len(steps)} steps were done.)")
+        _observed("\n".join(seen_rows))
         return _ok("\n".join(out))
     if failed_at:
         left = len(steps) - failed_at
@@ -1001,12 +1071,16 @@ async def do_steps(args: dict[str, Any]) -> dict:
                       else ""))
         scope, _ = _step_scope(steps[failed_at - 1], default_window)
         if scope:
+            snapshot = _controls_snapshot(scope)
+            seen_rows += [locator.window_title(scope), snapshot]
             out.append(f"Named controls in {locator.window_title(scope)!r} now:")
-            out.append(_controls_snapshot(scope))
+            out.append(snapshot)
     else:
         fg = locator.foreground_window()
         if fg:
+            seen_rows.append(locator.window_title(fg))
             out.append(f"Window in front now: {locator.window_title(fg)!r}.")
+    _observed("\n".join(seen_rows))
     return _ok("\n".join(out))
 
 
@@ -1602,6 +1676,8 @@ async def focus_window(args: dict[str, Any]) -> dict:
         return _ok(f"No window matching {args.get('title')!r}.")
     title = locator.window_title(h)
     ok = actuator.focus_window(h)
+    if ok:
+        _observed(title)                # the window's real title, for open/focus
     if not args.get("maximize"):
         _note(f"focused {title[:40]}")
         return _ok(f"Focused {title!r}." if ok else "Could not focus it.")
@@ -1683,7 +1759,9 @@ async def web_elements(args: dict[str, Any]) -> dict:
     lines = [f"{len(els)} elements:"]
     for e in els:
         tid = f"  testid={e.testid}" if e.testid else ""
-        lines.append(f"  {e.role:<10} {e.name[:44]:<44}{tid}")
+        name = e.name if _full() else e.name[:44]
+        lines.append(f"  {e.role:<10} {name:<44}{tid}")
+    _observed(chr(10).join(lines[1:]))
     return _ok(chr(10).join(lines))
 
 
@@ -1743,7 +1821,9 @@ async def web_page(args: dict[str, Any]) -> dict:
     if not snap.get("elements"):
         return _ok("Nothing interactive on this page. It may still be loading "
                    "— try web_read to see the text.")
-    return _ok(browser.render(snap, only_inview=bool(args.get("only_visible"))))
+    page = browser.render(snap, only_inview=bool(args.get("only_visible")))
+    _observed(page)
+    return _ok(page)
 
 
 @tool("web_do",
@@ -1793,18 +1873,23 @@ async def web_do(args: dict[str, Any]) -> dict:
     _note(f"web_do {len(steps)} steps")
 
     lines = [f"{r['done']}/{r['of']} steps in {r['elapsed_s']}s"]
+    seen_rows: list[str] = []           # as in do_steps: ok rows, the page
     for s in r["steps"]:
         mark = "ok  " if s.get("ok") else "FAIL"
         lines.append(f"  {mark} {s['step']}. {s.get('did') or s.get('error', '')}")
+        if s.get("ok") and s.get("did"):
+            seen_rows.append(s["did"])
         if s.get("text"):
             lines.append("       " + s["text"][:600].replace("\n", " "))
     if not r["ok"]:
         lines.append("")
         lines.append(f"Stopped at step {r['failed_at']}. The page now looks like:")
         lines.append(r.get("page", ""))
+        seen_rows.append(r.get("page", ""))
     else:
         lines.append(f"Now at {r.get('url', '')}"
                      + (f"  ({r['title']})" if r.get("title") else ""))
+    _observed("\n".join(seen_rows))
     return _ok("\n".join(lines))
 
 
@@ -2641,6 +2726,34 @@ async def save_lesson(args: dict[str, Any]) -> dict:
                f"automatically the next time a task looks like this.")
 
 
+@tool("save_script",
+      "ONLY for a task marked Repeat task: after the task is DONE and checked, save "
+      "what worked as a script so next time the app runs it without you. script = "
+      "one JSON object in the script format given with the task. Every element "
+      "name must be one your tools reported in this run. Returns what was saved, "
+      "or exactly what to fix; fix it and call again.",
+      {"script": str})
+async def save_script(args: dict[str, Any]) -> dict:
+    b = _blocked()
+    if b:
+        return _ok(b)
+    if not _learning["on"]:
+        return _ok("Saving a script is off for this task: the person did not "
+                   "mark it Repeat task. Do not call save_script.")
+    from core import authoring
+    name, msg = authoring.learn_script(
+        args.get("script"), _learning["task"], "\n".join(_learning["seen"]),
+        engine=_learning["engine"], replace=_learning["saved"])
+    if name:
+        _learning["saved"] = name
+        _note(f"saved script {name}")
+    elif _learning["saved"] and not authoring.resolves(_learning["saved"]):
+        # The retry broke this run's earlier save and it could not be put
+        # back: nothing usable is on disk, so the app must not say "Saved".
+        _learning["saved"] = None
+    return _ok(msg)
+
+
 ALL_TOOLS = [list_windows, find_controls, read_labels, screenshot,
              wait_for_reply,
              do_steps,
@@ -2653,7 +2766,8 @@ ALL_TOOLS = [list_windows, find_controls, read_labels, screenshot,
              web_download, web_upload, web_tabs, web_session,
              list_credentials, use_credential, ask_user, notify_user,
              find_job, schedule_task, record_job, edit_job, replay,
-             machine_info, copy_to_clipboard, recall_lessons, save_lesson]
+             machine_info, copy_to_clipboard, recall_lessons, save_lesson,
+             save_script]
 
 
 # ---------------------------------------------------------------------------
@@ -3099,6 +3213,8 @@ every time, and a long run then teaches the next one nothing. Save only a
 genuine, reusable discovery — not something that worked on the first try, and
 not a detail true of only this one run; a library full of noise helps no more
 than an empty one.
+save_script is different: call it only when the task says the person ticked
+"Repeat task", and only once the task is done.
 
 LOGGING IN
 Never guess, invent, or ask the model for a credential. Call use_credential

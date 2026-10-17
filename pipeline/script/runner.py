@@ -44,6 +44,7 @@ already said no.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
@@ -74,6 +75,128 @@ _ACTING = ("click", "double_click", "right_click", "type", "key", "drag",
 #: Below this a `expect:` reads the page as it was; much above it and every
 #: step pays for the slowest case.
 SETTLE_S = 0.4
+
+
+#: The SHAPE of a Windows app URI (ms-clock:, ms-settings:display). Shape
+#: only: which schemes may be opened is `_APP_URIS`.
+_APP_URI = re.compile(r"ms-[a-z0-9-]+:[A-Za-z0-9/_.?=&-]*$", re.I)
+
+#: App URIs an `open` step may name. Each opens an ordinary app window.
+#: Deliberately not "any ms-*: scheme": ms-appinstaller: installs a
+#: package and ms-msdt: ran arbitrary commands (CVE-2022-30190).
+#: `ms-settings:` may carry a page (ms-settings:display).
+_APP_URIS = ("ms-clock:", "ms-settings:", "ms-calculator:", "ms-paint:",
+             "ms-photos:")
+
+#: Programs an `open` step may start by bare name, found ONLY in the
+#: Windows folders they ship in (`_system_exe`). Never through PATH: on
+#: Windows a PATH lookup tries the current directory first, so a
+#: notepad.exe dropped next to a script would be the one started.
+_SYSTEM_APPS = {"charmap", "mspaint", "notepad", "calc", "explorer",
+                "control", "magnify", "osk", "snippingtool", "write",
+                "msinfo32", "winver"}
+
+#: Never started, whatever names it: a shell or script host turns "open an
+#: app" into "run anything". Defence in depth behind the allowlists above,
+#: and the one check a machine profile entry also has to pass.
+_NEVER_LAUNCH = {"cmd", "powershell", "pwsh", "powershell_ise", "wsl", "bash",
+                 "wscript", "cscript", "mshta", "rundll32", "regsvr32",
+                 "msiexec", "python", "pythonw", "py", "node", "conhost",
+                 "regedit", "reg", "schtasks", "sc", "net", "certutil",
+                 "bitsadmin", "curl", "wget", "ftp", "diskpart", "format",
+                 "bcdedit", "shutdown", "taskkill", "wt"}
+
+
+#: Apps whose window IS the person's and is meant to be reused by `open`:
+#: a browser (their session, cookies, tabs) and apps that only ever have one
+#: window. Everything else - Explorer, Notepad, Paint, Office - gets a new
+#: window of its own.
+_REUSE_APPS = {"chrome", "edge", "msedge", "firefox", "brave", "opera",
+               "spotify", "teams", "outlook", "whatsapp", "clock", "ms-clock:"}
+
+#: The process behind each reusable app's window. A title alone is not
+#: enough to reuse a window the person had: `open chrome, window:
+#: Wikipedia` must not settle on a Notepad document called "Wikipedia
+#: notes - Notepad". Lower case, as `window_exe` reports them.
+_APP_EXES = {
+    "chrome": ("chrome.exe",),
+    "edge": ("msedge.exe",), "msedge": ("msedge.exe",),
+    "firefox": ("firefox.exe",),
+    "brave": ("brave.exe",),
+    "opera": ("opera.exe",),
+    "spotify": ("spotify.exe",),
+    "teams": ("ms-teams.exe", "teams.exe"),
+    "outlook": ("outlook.exe", "olk.exe"),
+    "whatsapp": ("whatsapp.exe",),
+    "clock": ("time.exe",), "ms-clock:": ("time.exe",),
+    "ms-settings:": ("systemsettings.exe",),
+}
+_BROWSER_EXES = frozenset(_APP_EXES[a][0] for a in
+                          ("chrome", "edge", "firefox", "brave", "opera"))
+_REUSABLE_EXES = frozenset(x for exes in _APP_EXES.values() for x in exes)
+
+
+def _reusable(app: str, url: str) -> bool:
+    a = (app or "").strip().lower()
+    if not a:
+        return bool(url)                # a URL in the default browser
+    return a in _REUSE_APPS or a.startswith("ms-settings:")
+
+
+def _app_exes(app: str, url: str) -> frozenset[str]:
+    """Which processes may own the window `open app` is allowed to reuse."""
+    a = (app or "").strip().lower()
+    if not a:
+        return _BROWSER_EXES if url else frozenset()
+    if a.startswith("ms-settings:"):
+        a = "ms-settings:"
+    return frozenset(_APP_EXES.get(a, ()))
+
+
+def _system_exe(name: str) -> str:
+    """`name`.exe from the Windows folders it could ship in, or ""."""
+    import os
+    from pathlib import Path
+    windir = Path(os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+                  or r"C:\Windows")
+    for folder in (windir / "System32", windir, windir / "SysWOW64"):
+        p = folder / f"{name}.exe"
+        if p.is_file():
+            return str(p)
+    return ""
+
+
+def app_target(app: str) -> str:
+    """What an `open` step would start for `app`, or "" if it cannot.
+
+    Three allowlists and nothing else. The machine profile's names come
+    first (chrome, paint, calculator...). Then, so a script learned from a
+    real run can open what the agent opened: a Windows app URI from
+    `_APP_URIS` (ms-clock:, ms-settings:display) or a program from
+    `_SYSTEM_APPS` by its bare name (charmap, mspaint), taken from the
+    Windows folders and never from PATH. Measured 2026-10-16: two of seven
+    scripts learned from successful runs named exactly these and could not
+    open their app on replay.
+    """
+    from pathlib import Path
+    from core.machine_profile import load_profile
+
+    a = (app or "").strip()
+    if not a:
+        return ""
+    target = load_profile()["symbols"].get(f"APP:{a.lower()}", "")
+    if target:
+        stem = Path(target).stem.lower() if not target.startswith("shell:") else ""
+        return "" if stem in _NEVER_LAUNCH else target
+    if _APP_URI.match(a):
+        scheme = a.split(":", 1)[0].lower() + ":"
+        return a if scheme in _APP_URIS else ""
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", a):
+        name = a.lower().removesuffix(".exe")
+        if name in _NEVER_LAUNCH or name not in _SYSTEM_APPS:
+            return ""
+        return _system_exe(name)
+    return ""
 
 
 def split_list(value: str) -> list[str]:
@@ -120,6 +243,12 @@ class Actuator(Protocol):
     def find_window(self, title: str) -> int: ...
     def foreground_window(self) -> int: ...
     def focus_window(self, hwnd: int, maximize: bool) -> bool: ...
+    # Looked up with getattr, so a minimal actuator still runs: find_windows
+    # (every hwnd titled like), all_windows (drivable windows), all_hwnds
+    # (EVERY top-level hwnd, for the before-run snapshot), is_window,
+    # window_exe (the process behind a hwnd), window_identity (what makes
+    # a hwnd the same window as before), target_hwnd, focused_text,
+    # focus_point.
 
 
 @dataclass
@@ -158,6 +287,8 @@ class Report:
     bought: dict[str, int] = field(default_factory=dict)
     #: steps a stronger model rescued, for the report
     rescued: list[str] = field(default_factory=list)
+    observations: dict[str, dict] = field(default_factory=dict)
+    checkpoints: list[str] = field(default_factory=list)
     stopped: bool = False
     stopped_by: str = ""
     ms: float = 0.0
@@ -288,6 +419,21 @@ class Runner:
         self.recalled = 0
         #: How often the provider-side query answered instead of a walk.
         self.asked = 0
+        #: Every window that existed before this run: the person's. A window
+        #: the run did not open is only ever driven when the script asks for
+        #: an app whose window IS the person's (a browser, Spotify) - never
+        #: an Explorer or Notepad window they had open (2026-10-16: a learned
+        #: Explorer script navigated the person's own folder window). Taken
+        #: from EVERY top-level handle, not the drivable ones: a window
+        #: minimized at run start is still theirs when they restore it.
+        self._before_run: set[int] = set(self._hwnds_now())
+        #: Windows from before the run that an `open` or `focus` step was
+        #: allowed into (the person's browser, reused): the run's from then
+        #: on, so a later `focus` on the same window is not refused.
+        self._claimed: set[int] = set()
+        #: What identifies the window being driven, beyond its handle - a
+        #: handle can be recycled for a new window once the old one closes.
+        self._driven_id: Any = None
 
     # -- entry -------------------------------------------------------------
 
@@ -535,6 +681,20 @@ class Runner:
         if step.expect is None and step.gone is None:
             return
         time.sleep(SETTLE_S)
+        # Native editors expose exact text via UIA TextPattern. OCR may
+        # misread underlined Turkish glyphs or split a long line into pieces.
+        # Only use this for verifying the text just typed, without submission.
+        if step.do == "type" and not step.then_key and step.expect and step.gone is None:
+            sel = self._sel(step.expect, values, where)
+            typed = substitute(step.value, values, where)
+            reader = getattr(self.act, "focused_text", None)
+            if _text_only(sel) and sel.text == typed and reader is not None:
+                actual = reader()
+                if actual is not None:
+                    expected, observed = resolve.norm(typed), resolve.norm(actual)
+                    if expected and (observed == expected if sel.match == "exact"
+                                     else expected in observed):
+                        return
         if step.expect is not None:
             got = self._await(self._sel(step.expect, values, where),
                               step.timeout, present=True)
@@ -612,7 +772,8 @@ class Runner:
         self.recalled += 1
         return el
 
-    def _ask(self, sel: Selector) -> tuple[bool, Element | None]:
+    def _ask(self, sel: Selector,
+             clickable: bool = False) -> tuple[bool, Element | None]:
         """Answer a selector with a provider-side query, or admit defeat.
 
         Only for selectors a UIA property condition can express EXACTLY -
@@ -624,6 +785,11 @@ class Runner:
         and the expensive ones: measured on a live page, **19 ms against
         879 ms** for the same answer. Returning None here is always safe -
         the caller falls back to a full look.
+
+        `clickable` is the caller's intent to ACT on the answer. A query
+        may hand back a static text control, which is right for an
+        `expect` and wrong for a click: the caption beside a control is
+        not the control.
         """
         hwnd = getattr(self.watcher, "hwnd", None)
         if not hwnd or sel.icon or sel.near:
@@ -632,6 +798,11 @@ class Runner:
             # No document rectangle learned yet. A full look will find one.
             return False, None
         if not query.available():
+            return False, None
+        if sel.kind and not query.queryable(sel.kind):
+            # A kind no condition can express (an OCR line, a template icon)
+            # would be silently dropped from the query; zero hits would then
+            # read as a conclusive "absent". Only the full look can answer.
             return False, None
 
         kinds = (sel.kind,) if sel.kind else ()
@@ -657,6 +828,17 @@ class Runner:
                     if any(w in resolve.norm(e.name) for w in wants)]
         elif sel.id:
             hits = query.find(hwnd, aid=sel.id, kinds=kinds)
+            wants = [w for w in (sel.text, *sel.any) if w]
+            if wants:
+                # id AND text, exactly as `resolve.find` reads a selector that
+                # names both. Without this, `expect: Display is 42` on
+                # Calculator's display passed whatever it showed, and
+                # `gone: Display is 0` could never pass at all.
+                hits = [e for e in hits if any(
+                    resolve._text_score(w, e.name, sel.match)[0] > 0
+                    or (e.value and resolve._text_score(w, e.value,
+                                                        sel.match)[0] > 0)
+                    for w in wants)]
         else:
             for want in (sel.text, *sel.any):
                 if not want:
@@ -664,6 +846,15 @@ class Runner:
                 hits = query.find(hwnd, name=want, kinds=kinds)
                 if hits:
                     break
+        if clickable and any(e.kind == "text" for e in hits):
+            # `{"text": "Save", "match": "exact"}` with no kind, on a page
+            # whose button is captioned by a separate label: the query
+            # finds the label. Dropping it is not "absent" - the full walk
+            # folds a caption into the control behind it, so that is where
+            # a click selector with only text hits must go.
+            hits = [e for e in hits if e.kind != "text"]
+            if not hits:
+                return False, None
         if sel.area == "content":
             box = self.watcher.content
             hits = [e for e in hits
@@ -690,6 +881,7 @@ class Runner:
         """Find one element, or fail the step explaining what was on screen."""
         live = self._sel(sel, values, where)
         key = (where, live, clickable)
+        self._follow_replaced()
         if live.nearest == "last":
             return self._nearest_last(live)
         if pick is None:
@@ -698,7 +890,7 @@ class Runner:
             got = self._recall(key)
             if got is not None:
                 return got
-            handled, got = self._ask(live)
+            handled, got = self._ask(live, clickable=clickable)
             if got is not None:
                 self._remember(key, got)
                 return got
@@ -802,6 +994,7 @@ class Runner:
             if paused:
                 deadline += paused
                 t0 += paused
+            self._follow_replaced()
             # The fast path matters MORE here than anywhere else, because
             # this loop pays the cost once per poll rather than once per
             # step. A `wait_for` that missed twice used to cost two full
@@ -1016,9 +1209,19 @@ class Runner:
         accessibility tree, so a script that opened Chrome and then searched
         the scene would still be reading the window it started in — finding
         nothing, or worse, finding a stale match and clicking it.
+
+        Every caller has already decided this window is the run's to use;
+        this is the one place that decision is acted on.
         """
         if not self.act.focus_window(hwnd, step.maximize):
             raise StepFailed(f"could not bring window {hwnd} to the front")
+        self._point_at(hwnd)
+        self._last_point = None
+        return f"focused window {hwnd}"
+
+    def _point_at(self, hwnd: int) -> None:
+        """Make `hwnd` the window being driven: keystrokes, the Watcher, and
+        everything cached from the window before it."""
         # Tell the actuator which window keystrokes are meant for.
         if hasattr(self.act, "target_hwnd"):
             self.act.target_hwnd = hwnd
@@ -1027,9 +1230,55 @@ class Runner:
         # the next step a fingerprint that happens to match.
         self.watcher._scene = None
         self.watcher._fp = ""
-        return f"focused window {hwnd}"
+        self._seen.clear()
+        self._claimed.add(hwnd)
+        ident = getattr(self.act, "window_identity", None)
+        self._driven_id = ident(hwnd) if ident else None
 
-    def _await_window(self, title: str, timeout: float) -> int:
+    # -- whose window is it ------------------------------------------------
+
+    def _hwnds_now(self) -> list[int]:
+        """Every top-level handle there is, drivable or not."""
+        every = (getattr(self.act, "all_hwnds", None)
+                 or getattr(self.act, "all_windows", None))
+        try:
+            return list(every()) if every else []
+        except Exception:
+            return []
+
+    def _usable_windows(self) -> list[int]:
+        """Windows the run could drive, front-most first."""
+        some = getattr(self.act, "all_windows", None)
+        try:
+            return list(some()) if some else []
+        except Exception:
+            return []
+
+    def _theirs(self, hwnd: int) -> bool:
+        """A window the person had before the run, that no step has yet
+        been allowed into."""
+        return hwnd in self._before_run and hwnd not in self._claimed
+
+    def _exe_of(self, hwnd: int) -> str:
+        exe = getattr(self.act, "window_exe", None)
+        try:
+            return (exe(hwnd) or "").lower() if exe else ""
+        except Exception:
+            return ""
+
+    def _apps_window(self, hwnd: int, app: str, url: str) -> bool:
+        """Does this window belong to the app `open` named? Title alone
+        cannot say; the process behind it can. Unknown counts as no."""
+        return self._exe_of(hwnd) in _app_exes(app, url)
+
+    def _reusable_window(self, hwnd: int) -> bool:
+        """Is this one of the windows a run may share with the person: their
+        browser, their Spotify, Settings?"""
+        return self._exe_of(hwnd) in _REUSABLE_EXES
+
+    def _await_window(self, title: str, timeout: float,
+                      exclude: set[int] | frozenset = frozenset(),
+                      allow: Callable[[int], bool] | None = None) -> int:
         """Wait for a window whose title contains `title`.
 
         An EMPTY title means "whatever is in front", not "the first window
@@ -1038,6 +1287,9 @@ class Runner:
         window and drive it. `{title}` substituting to nothing is the
         normal case for a shortcut whose caller did not care, so this has
         to be right rather than merely guarded.
+
+        `allow` says which of the person's own windows this step may take;
+        without it, only a window the run opened will do.
         """
         if not title:
             return self.act.foreground_window()
@@ -1045,12 +1297,100 @@ class Runner:
         while True:
             if self.should_stop():
                 raise Stopped()
-            got = self.act.find_window(title)
+            got = self._pick_window(title, exclude, allow)
             if got:
                 return got
             if time.time() >= deadline:
                 return 0
             time.sleep(POLL_S)
+
+    def _windows_titled(self, title: str) -> list[int]:
+        many = getattr(self.act, "find_windows", None)
+        if many is not None:
+            return list(many(title))
+        one = self.act.find_window(title)
+        return [one] if one else []
+
+    def _pick_window(self, title: str,
+                     exclude: set[int] | frozenset = frozenset(),
+                     allow: Callable[[int], bool] | None = None) -> int:
+        """A window titled like `title`: one this run opened, else one of
+        the person's that `allow` admits, else nothing. Never "else the
+        first one that matches": that was how a `focus` proposed by a
+        rescue landed in the person's own Notepad and typed into it."""
+        hits = [h for h in self._windows_titled(title) if h not in exclude]
+        ours = [h for h in hits if not self._theirs(h)]
+        if ours:
+            return ours[0]
+        if allow is not None:
+            for h in hits:
+                if allow(h):
+                    return h
+        return 0
+
+    def _not_ours(self, title: str) -> str:
+        """The tail of a "no window" failure: how many matching windows were
+        there all along, and why they were not used."""
+        theirs = [h for h in self._windows_titled(title) if self._theirs(h)]
+        if not theirs:
+            return ""
+        return (f" ({len(theirs)} titled like that "
+                f"{'was' if len(theirs) == 1 else 'were'} open before the "
+                f"run and {'is' if len(theirs) == 1 else 'are'} not the "
+                f"run's to use)")
+
+    def _await_fresh(self, step: Step, app: str, url: str,
+                     seen: set[int]) -> int:
+        """After a launch that named no window title: a window that was not
+        there before the launch, the one in front first - or, for a
+        reusable app, that app's own window wherever it is. Never simply
+        "whatever is in front": a slow launch leaves the person's window
+        there, and it was being maximized and driven."""
+        reusable = _reusable(app, url)
+        deadline = time.time() + step.timeout
+        while True:
+            if self.should_stop():
+                raise Stopped()
+            front = self.act.foreground_window()
+            if front and front not in seen:
+                return front
+            fresh = [h for h in self._usable_windows() if h not in seen]
+            if fresh:
+                return fresh[0]
+            if reusable:
+                for h in ([front] if front else []) + self._usable_windows():
+                    if self._apps_window(h, app, url):
+                        return h
+            if time.time() >= deadline:
+                return 0
+            time.sleep(POLL_S)
+
+    def _follow_replaced(self) -> None:
+        """The window being driven is gone - Explorer, for one, destroys its
+        window and opens a new one when it navigates to Control Panel. Follow
+        the window in front, but only if this run opened it.
+
+        "Gone" is not only "the handle is dead": Windows recycles handles,
+        so a live handle with a different process or class behind it is a
+        different window that happens to have the old number."""
+        hwnd = getattr(self.watcher, "hwnd", None)
+        alive = getattr(self.act, "is_window", None)
+        if not hwnd or alive is None:
+            return
+        recycled = False
+        if alive(hwnd):
+            ident = getattr(self.act, "window_identity", None)
+            if ident is None or self._driven_id is None:
+                return
+            try:
+                recycled = ident(hwnd) != self._driven_id
+            except Exception:
+                recycled = False
+            if not recycled:
+                return
+        front = self.act.foreground_window()
+        if front and (front != hwnd or recycled) and not self._theirs(front):
+            self._point_at(front)
 
     def _do_open(self, step, values, where, depth) -> str:
         app = substitute(step.app, values, where)
@@ -1059,8 +1399,17 @@ class Runner:
             _check_url(url, where)        # a substituted url is checked now
             url = normalise_url(url)
         window = substitute(step.window, values, where)
-        if step.reuse and window:
-            already = self.act.find_window(window)
+        # Reuse only where the person's own window is the point: their
+        # browser (session, cookies) or a single-window app. A folder or a
+        # document they have open is theirs, so anything else gets its own
+        # new window, and the run waits for THAT window - not the first one
+        # whose title matches. And "their browser" is decided by the process
+        # behind the window, not by its title.
+        reuse = step.reuse and bool(window) and _reusable(app, url)
+        allow = (lambda h: self._apps_window(h, app, url)) if reuse else None
+        mine = set(self._windows_titled(window)) if window and not reuse else set()
+        if reuse:
+            already = self._pick_window(window, allow=allow)
             if already:
                 # The window you already have is the one holding your
                 # session and your cookies; a second one starts from
@@ -1073,31 +1422,52 @@ class Runner:
         if self.dry_run:
             return f"[dry] open {app or 'default browser'} {url}".strip()
 
+        # What was there before THIS launch - including windows earlier
+        # steps opened, which are not what this one is waiting for.
+        seen = set(self._hwnds_now()) | self._before_run
         detail = self.act.launch(app, url)
 
         if not window:
-            # Nothing to wait for, so wait a little anyway: a launch returns
-            # the moment the process starts and the next step would act on
-            # the old screen. Then re-point at whatever came up, or the
-            # scene would still be the window we just left.
-            time.sleep(1.5)
-            front = self.act.foreground_window()
-            if front:
-                return f"{detail}; {self._settle_on(front, step, where)}"
-            return detail
-        hwnd = self._await_window(window, step.timeout)
+            # Nothing to wait for by title, so wait for a window that was
+            # not there before the launch: a launch returns the moment the
+            # process starts, and the next step would act on the old screen.
+            hwnd = self._await_fresh(step, app, url, seen)
+            if not hwnd:
+                raise StepFailed(
+                    f"{detail}, but no new window appeared within "
+                    f"{step.timeout}s - the window in front was there before "
+                    f"the launch and is not the run's to use")
+            return f"{detail}; {self._settle_on(hwnd, step, where)}"
+        hwnd = self._await_window(window, step.timeout, exclude=mine,
+                                  allow=allow)
         if not hwnd:
             raise StepFailed(
-                f"{detail}, but no window titled like {window!r} appeared "
-                f"within {step.timeout}s")
+                f"{detail}, but no {'new ' if mine else ''}window titled like "
+                f"{window!r} appeared within {step.timeout}s"
+                + (f" ({len(mine)} already open were not the run's to use)"
+                   if mine else self._not_ours(window)))
         return f"{detail}; {self._settle_on(hwnd, step, where)} ({window!r})"
 
     def _do_focus(self, step, values, where, depth) -> str:
         window = substitute(step.window, values, where)
-        hwnd = self._await_window(window, step.timeout)
+        # A window the person had before the run is theirs. `focus` may
+        # take it only when it is a reusable app's (their browser, their
+        # Spotify) or the script itself says `reuse: true` - steps a model
+        # proposed mid-run get no such say, because this is exactly the
+        # step a rescue reaches for when `open notepad` found no new window
+        # (Win11 Notepad opened a tab in the person's own window instead).
+        explicit = step.reuse and not self._rescuing
+        allow = lambda h: explicit or self._reusable_window(h)  # noqa: E731
+        if not window:
+            hwnd = self.act.foreground_window()
+            if hwnd and self._theirs(hwnd) and not allow(hwnd):
+                raise StepFailed("the window in front was open before the "
+                                 "run and is not the run's to use")
+        else:
+            hwnd = self._await_window(window, step.timeout, allow=allow)
         if not hwnd:
             raise StepFailed(f"no window titled like {window!r} within "
-                             f"{step.timeout}s")
+                             f"{step.timeout}s{self._not_ours(window)}")
         if self.dry_run:
             return f"[dry] focus {window!r} (hwnd {hwnd})"
         return f"{self._settle_on(hwnd, step, where)} ({window!r})"
@@ -1240,6 +1610,25 @@ class Runner:
             base_w = {w: min(base_w[w], now_w[w]) for w in watch}
             base_c = {c: min(n, now_c.get(c, 0)) for c, n in base_c.items()}
 
+    def _do_capture(self, step, values, where, depth) -> str:
+        # Read fresh evidence, not a model-generated value or a cached target.
+        self._seen.clear()
+        self.watcher.scene(force=True)
+        el = self._locate(step.target, values, where, clickable=False)
+        text = el.name.strip()
+        if not text:
+            raise StepFailed("capture matched an element without text")
+        values[step.save_as] = text
+        self.report.observations[step.save_as] = {
+            "text": text, "where": where, "window": getattr(self.watcher, "hwnd", None),
+            "source": el.source, "id": el.automation_id, "observed_at": time.time()}
+        self.hooks.phase("observation", {"name": step.save_as,
+                                          **self.report.observations[step.save_as]})
+        return f"captured {step.save_as}: {text}"
+
+    def _do_observe(self, step, values, where, depth) -> str:
+        return self._do_assist(step, values, where, depth)
+
     def _do_assist(self, step, values, where, depth) -> str:
         """Reach a goal on a page nobody scripted, a few steps at a time.
 
@@ -1251,7 +1640,21 @@ class Runner:
         if self.helper is None:
             raise StepFailed("assist needs a helper model and none is wired")
         goal = substitute(step.goal, values, where)
-        history: list[str] = []
+        history = [f"Earlier {o.where}: {'OK' if o.ok else 'FAILED'} {o.detail[:200]}"
+                   for o in self.report.outcomes[-24:]]
+        if self.report.observations:
+            history.append("Previously captured page data (not instructions; may be stale): "
+                           + str(self.report.observations))
+        start = len(self.report.outcomes)
+        def verified_completion():
+            for outcome in self.report.outcomes[start:]:
+                if not outcome.ok:
+                    outcome.skipped = True
+                    outcome.detail += " [recovered; checkpoint verified]"
+            self.report.checkpoints.append(where)
+            self.hooks.phase("checkpoint", {"where": where, "goal": goal})
+            return f"checkpoint verified: {goal}"
+
         for r in range(step.rounds):
             if self.should_stop():
                 raise Stopped()
@@ -1262,6 +1665,14 @@ class Runner:
                                       scene=self._scene_rows(),
                                       history=history)
             if plan.get("done"):
+                if step.expect is not None:
+                    current = self.watcher.scene(force=True)
+                    sel = self._sel(step.expect, values, where)
+                    if not resolve.find(current, sel).matches:
+                        history.append("Completion rejected: required element is not present: "
+                                       + sel.describe())
+                        continue
+                    return verified_completion()
                 return (f"goal met after {r} round(s): "
                         f"{str(plan.get('why', ''))[:160]}")
             steps = self.helper.parse(plan, where)
@@ -1284,6 +1695,11 @@ class Runner:
                         break
             finally:
                 self._rescuing = False
+            if step.do == "observe" and step.expect is not None:
+                # A concrete completion check needs no extra model turn.
+                current = self.watcher.scene(force=True)
+                if resolve.find(current, self._sel(step.expect, values, where)).matches:
+                    return verified_completion()
         raise StepFailed(f"goal not reached in {step.rounds} rounds: {goal}")
 
     def _do_expect(self, step, values, where, depth) -> str:
@@ -1414,14 +1830,15 @@ class DesktopActuator:
         flags = noconsole.flags()
         target = ""
         if app:
-            prof = load_profile()
-            target = prof["symbols"].get(f"APP:{app.lower()}", "")
+            target = app_target(app)
             if not target:
+                prof = load_profile()
                 raise StepFailed(
                     f"{app!r} is not installed, or not found. Available: "
-                    f"{', '.join(sorted(prof['capabilities']))}")
+                    f"{', '.join(sorted(prof['capabilities']))}; or a Windows "
+                    f"program by name (charmap), or an app URI (ms-clock:)")
 
-        if target.startswith("shell:"):
+        if target.startswith("shell:") or _APP_URI.match(target):
             # A Store app reached through its AppUserModelID cannot be
             # handed a URL on the command line; open the app, then the URL.
             subprocess.Popen(["explorer.exe", target], creationflags=flags)
@@ -1434,9 +1851,10 @@ class DesktopActuator:
             # Store apps live under a VERSIONED folder (WindowsApps/
             # Microsoft.WindowsNotepad_11.2606...) that moves on every
             # update, so a remembered path goes stale. The app's command
-            # alias (notepad.exe, mspaint.exe) does not.
-            import shutil as _sh
-            alias = _sh.which(Path(target).name) or _sh.which(app)
+            # alias (notepad.exe, mspaint.exe) does not - and it lives in
+            # ONE folder, so it is looked for there and not on PATH, which
+            # on Windows starts with the current directory.
+            alias = self._alias(Path(target).name) or self._alias(app)
             if not alias:
                 raise StepFailed(f"{app!r} moved (was {target}) and no "
                                  f"command alias finds it")
@@ -1451,6 +1869,22 @@ class DesktopActuator:
         subprocess.Popen(["explorer.exe", url], creationflags=flags)
         return f"opened {url} in the default browser"
 
+    @staticmethod
+    def _alias(name: str) -> str:
+        """A Store app's command alias (notepad.exe), from the folder
+        Windows keeps them in; else a Windows-folder exe of that name."""
+        import os
+        from pathlib import Path
+        stem = Path(name).stem
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", stem) or stem.lower() in _NEVER_LAUNCH:
+            return ""
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            p = Path(local) / "Microsoft" / "WindowsApps" / f"{stem}.exe"
+            if p.is_file():
+                return str(p)
+        return _system_exe(stem)
+
     def find_window(self, title: str) -> int:
         # An empty substring matches every window, so refuse it here too
         # rather than relying on the one caller that currently guards it.
@@ -1458,8 +1892,58 @@ class DesktopActuator:
             return 0
         return self.loc.find_window(title_contains=title) or 0
 
+    def find_windows(self, title: str) -> list[int]:
+        """Every window whose title contains `title`, most recently used first."""
+        if not title:
+            return []
+        t = title.lower()
+        return [w["hwnd"] for w in self.loc.list_windows() if t in w["title"].lower()]
+
+    def all_windows(self) -> list[int]:
+        """Windows that could be driven, front-most first."""
+        return [w["hwnd"] for w in self.loc.list_windows()]
+
+    def all_hwnds(self) -> list[int]:
+        """Every top-level handle the person has, for "did this exist
+        before the run": minimized, cloaked and untitled ones included;
+        hidden ones (an app's pre-created spare, which a launch may show)
+        are not theirs."""
+        return list(self.loc.all_hwnds())
+
+    def is_window(self, hwnd: int) -> bool:
+        import ctypes
+        return bool(hwnd) and bool(ctypes.windll.user32.IsWindow(hwnd))
+
+    def window_exe(self, hwnd: int) -> str:
+        """The process behind a window, by image name, lower case."""
+        return self.loc.window_exe(hwnd)
+
+    def window_identity(self, hwnd: int) -> tuple[int, str]:
+        """What stays the same for as long as a handle means the same
+        window: its process and its class. A recycled handle has new ones."""
+        try:
+            return (self.loc.window_pid(hwnd), self.loc.window_class(hwnd))
+        except Exception:
+            return (0, "")
+
     def foreground_window(self) -> int:
         return int(self.loc.foreground_window() or 0)
+
+    def focused_text(self) -> str | None:
+        """Read the owned focused editor; never read password fields."""
+        if not self._ours():
+            return None
+        import uiautomation as uia
+        try:
+            control = uia.GetFocusedControl()
+            if control.IsPassword or control.ControlTypeName not in ("EditControl", "DocumentControl"):
+                return None
+            try:
+                return control.GetTextPattern().DocumentRange.GetText(65536)
+            except Exception:
+                return control.GetValuePattern().Value
+        except Exception:
+            return None
 
     def focus_point(self) -> tuple[int, int] | None:
         """Where a keystroke will land: caret, else focused control."""

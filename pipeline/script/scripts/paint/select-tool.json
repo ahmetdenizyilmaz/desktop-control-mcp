@@ -1,0 +1,70 @@
+{
+  "name": "paint/select-tool",
+  "version": 1,
+  "description": "Open Paint and pick the Select tool from its toolbar.",
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "paint",
+    "mspaint",
+    "select",
+    "selection",
+    "select tool",
+    "selection tool",
+    "seçim",
+    "seç",
+    "seçim aracı",
+    "boya"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open Paint and click the Select tool in its toolbar. This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "steps": [
+    {
+      "do": "open",
+      "app": "paint",
+      "window": "Paint",
+      "timeout": 45.0,
+      "expect": {
+        "text": "Select",
+        "kind": "button"
+      },
+      "note": "Windows 10 Paint calls the tool 'Select'. Windows 11 Paint calls it 'Selection'. 'contains' matches both."
+    },
+    {
+      "do": "focus",
+      "window": "Paint",
+      "timeout": 15.0
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Select",
+        "kind": "button",
+        "nth": 1
+      },
+      "note": "Picking a tool only changes the button's state. No new element appears, so this step cannot have an expect."
+    },
+    {
+      "do": "if",
+      "present": {
+        "text": "Free-form",
+        "kind": "menuitem"
+      },
+      "then": [
+        {
+          "do": "click",
+          "target": {
+            "text": "Rectang",
+            "kind": "menuitem"
+          },
+          "gone": {
+            "text": "Free-form",
+            "kind": "menuitem"
+          },
+          "note": "If the click opened the selection-shape dropdown, choose Rectangle. That turns the Select tool on and closes the menu."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "name": "obilet/continue-night-window-seat",
+  "version": 1,
+  "description": "Continue from the open Obilet seat map, choose a verified window seat for my night bus, and stop at passenger details or payment.",
+  "params": {
+    "origin": "Ankara",
+    "destination": "Fethiye",
+    "date": "29 September 2026",
+    "night_window": "between 20:00 and 05:00"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "obilet",
+    "bus",
+    "window seat",
+    "night bus",
+    "Ankara",
+    "Fethiye"
+  ],
+  "logging": "full",
+  "authored_by": "codex",
+  "source_task": "Open Obilet. Find Ankara → Fethiye buses departing on 29 September 2026 at night. Verify a window seat from the seat map. Stop when personal      \n  > details or payment information are required. Enable full logging.\nPrevious attempt:\nobilet/bus-window-seat-2: 18 steps in 174.9s\n  FAILED obilet/bus-window-seat-2.steps[3].round1[1] (type): no element matched id 'destination-input', kind=edit, in the content. Visible: AI Modu düğmesi, AI Modu etkinken soru sormak için Enter tuşuna basın, Adres ve arama çubuğu, [profile name], Ana Sayfa, Ankara - Fethiye Koltuk Seçimi Ali Osman Ulusoy, Ankara Otobüs Bileti Fiyatları, Ankara Otobüs Firmaları - obilet.com, Başka bir ekranda görüntüle - sabitlendi, Bluetooth\n  FAILED obilet/bus-window-seat-2.steps[3] (observe): goal not reached in 8 rounds: Confirm the current results are for Ankara to Fethiye on 29 September 2026. Open a trip departing at night (between 20:00 and 05:00) only if its route, date, and departure time are shown on the page. If no matching trip is shown, do not open one.\nDo not repeat successful actions. Write only remaining work.",
+  "verified": false,
+  "steps": [
+    {
+      "do": "observe",
+      "goal": "On the current Obilet seat map, verify it belongs to the {origin} to {destination} trip on {date}, departing {night_window}. Choose an available seat only if the seat map itself clearly identifies it as a window seat; if the route, date, time, or window position is unclear, do not select a seat. Continue only as far as the passenger details or payment form, then stop without entering personal or payment information.",
+      "rounds": 10,
+      "expect": {
+        "text": "Yolcu Bilgileri",
+        "area": "content"
+      }
+    }
+  ]
+}

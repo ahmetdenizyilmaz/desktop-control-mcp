@@ -140,6 +140,52 @@ def list_windows(include_cloaked: bool = False,
     return out
 
 
+def all_hwnds() -> list[int]:
+    """Every top-level window the person HAS: minimized, cloaked, untitled,
+    tiny - but not hidden.
+
+    `list_windows` answers "what could be driven"; this answers "what
+    existed". The script runner snapshots it before a run so that a window
+    the person had - even one minimized to the taskbar, which reports a
+    -32000 rectangle and fails the size filter above - still counts as
+    theirs when they restore it mid-run.
+
+    A window with no WS_VISIBLE style is not something the person has: it
+    is an app's spare. Explorer keeps its next window pre-created and
+    hidden, and `explorer.exe` SHOWS that handle rather than making a new
+    one - counted as pre-existing, every `open explorer` on this PC
+    "found no new window" (2026-10-16). So a hidden window a launch brings
+    up is the run's, as it always was.
+    """
+    out: list[int] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def cb(hwnd, _l):
+        if user32.IsWindowVisible(hwnd):      # true for minimized and cloaked
+            out.append(hwnd)
+        return True
+
+    user32.EnumWindows(cb, None)
+    return out
+
+
+def window_pid(hwnd: int) -> int:
+    pid = ctypes.wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
+def window_exe(hwnd: int) -> str:
+    """The image name of the process behind a window (chrome.exe), in
+    lower case - or "" when it cannot be read, which an elevated process
+    refuses. Callers treat "" as "not the app I was looking for"."""
+    try:
+        import psutil
+        return psutil.Process(window_pid(hwnd)).name().lower()
+    except Exception:
+        return ""
+
+
 def foreground_window() -> int:
     return user32.GetForegroundWindow()
 
@@ -150,15 +196,9 @@ def find_window(title_contains: str | None = None,
         if title_contains and title_contains.lower() in w["title"].lower():
             return w["hwnd"]
     if exe:
-        import psutil
         for w in list_windows():
-            pid = ctypes.wintypes.DWORD()
-            user32.GetWindowThreadProcessId(w["hwnd"], ctypes.byref(pid))
-            try:
-                if psutil.Process(pid.value).name().lower() == exe.lower():
-                    return w["hwnd"]
-            except Exception:
-                continue
+            if window_exe(w["hwnd"]) == exe.lower():
+                return w["hwnd"]
     return None
 
 

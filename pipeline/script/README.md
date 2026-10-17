@@ -1,5 +1,47 @@
 # The script language
 
+## Observed stages across sites
+
+For an unfamiliar page, use `observe` instead of guessing all its controls:
+
+```json
+{
+  "name": "example/transfer-reference",
+  "steps": [
+    {"do":"open","url":"https://first.example","reuse":false},
+    {"do":"observe","goal":"Reveal the reference","expect":{"id":"reference"},"rounds":4},
+    {"do":"capture","target":{"id":"reference"},"save_as":"reference"},
+    {"do":"open","url":"https://second.example","reuse":false},
+    {"do":"observe","goal":"Enter reference {reference} and check it","expect":"Reference verified","rounds":4}
+  ]
+}
+```
+
+These are illustrative sites/selectors. Completion selectors must identify the
+actual outcome, not a permanent header. Each round sends fresh elements and a
+screenshot to the configured helper, together with execution history and captured
+evidence. Generated batches are validated completely before execution. The runner
+checks completion itself after each batch, saving a model call just to say done.
+Existing commit and foreground checks remain in force.
+
+`capture` stores the selected element's name, source, window and timestamp in
+`report.observations`; later `{reference}` substitutions use that observed text.
+Top-level captures must precede use and cannot overwrite input parameters. Pass
+values into called scripts explicitly with `with`. Model-generated values are
+not treated as captured evidence. The app logs captures and checkpoints when
+full logging is enabled.
+
+State persists across stages **within a run**. Automatic restart recovery of these
+stages, named browser-tab sessions and function return maps are not implemented;
+the existing restart mechanism skips completed repeat items only. Screenshots/UIA
+remain the production observation path. The opt-in `tests/live_observe.py` uses a
+test DOM adapter with real Codex and headed Chrome against two local origins.
+
+Run deterministic regressions with `python tests/test_observe.py` from `pipeline/`.
+Run the live test from `agent/` with
+`../.venv/Scripts/python.exe ../pipeline/tests/live_observe.py`.
+Prompts, replies, screenshots and timing go to `agent/workspace/observe-test/`.
+
 A script is a JSON file listing steps. It is **data, never code** — which
 is the decision everything else follows from, because scripts are loaded
 from a server or a git repo, and a step list can be checked before
@@ -124,12 +166,56 @@ Any step also takes:
 {"do": "focus", "window": "Migros", "maximize": true}
 ```
 
-App names come from the machine profile, so `chrome` works whether it is on
-PATH, in App Paths, or only reachable through its Start-menu id. A `url`
-with no `app` goes to the default browser. Only `http` and `https` are
-allowed — every other scheme is a registered protocol handler that can
-launch an arbitrary program, which is too large a door for a file that may
-itself have come from a URL.
+**What `app` may name** — three allowlists, and nothing outside them:
+
+| form | examples | resolved how |
+|---|---|---|
+| a machine-profile name | `chrome`, `edge`, `notepad`, `paint`, `calculator`, `spotify`, `teams` | the profile's path or Start-menu id — the same table the agent's `open_app` uses |
+| a Windows app URI | `ms-clock:`, `ms-settings:`, `ms-settings:display`, `ms-calculator:`, `ms-paint:`, `ms-photos:` | opened as-is. **Only these schemes**: `ms-msdt:` ran arbitrary commands and `ms-appinstaller:` installs packages, so "any `ms-*:`" is not a category |
+| a bare system program | `charmap`, `mspaint`, `notepad`, `calc`, `explorer`, `control`, `magnify`, `osk`, `snippingtool`, `write`, `msinfo32`, `winver` | `<name>.exe` from `%WINDIR%\System32`, `%WINDIR%` or `SysWOW64` — **never from PATH**, which on Windows starts with the current directory, so a `notepad.exe` dropped next to a script would be the one started |
+
+Shells and script hosts (`cmd`, `powershell`, `wscript`, `mshta`,
+`rundll32`, `wt`…) are refused whatever names them, including a profile
+entry. A `url` with no `app` goes to the default browser. Only `http` and
+`https` are allowed — every other scheme is a registered protocol handler
+that can launch an arbitrary program, which is too large a door for a file
+that may itself have come from a URL.
+
+**Whose window is it.** The rule the runner enforces is *only touch
+windows we opened*. Before a run starts it snapshots every top-level
+window handle the person has — minimized, on another virtual desktop,
+untitled, all of them — and those are the person's. (A window an app keeps
+*hidden* is not: Explorer pre-creates its next window that way and a launch
+merely shows it, so a hidden window that comes up after `open` is the run's.)
+From then on:
+
+- **`open` waits for a NEW window** — one that was not there before the
+  launch — and drives that. A folder or a document the person already had
+  open with a matching title is not used, even if nothing new appears: the
+  step fails with *"…already open were not the run's to use"*. (Win11
+  Notepad is the known case: it opens a tab in the window you already
+  have, so `open notepad` on a desktop with Notepad up fails, correctly.)
+- **The exceptions are apps whose one window IS the person's**: a browser
+  (`chrome`, `edge`, `firefox`, `brave`, `opera` — their session, cookies
+  and tabs), `spotify`, `teams`, `outlook`, `whatsapp`, `clock`, and
+  `ms-settings:`. `open chrome, window: Wikipedia` reuses the Chrome window
+  showing Wikipedia rather than starting a second browser. Reuse is decided
+  by the **process behind the window**, not its title: a Notepad document
+  called "Wikipedia notes" is not Chrome. `reuse: false` forces a new
+  window even for these.
+- **`open` with no `window`** waits for whatever window the launch creates
+  (or, for a reusable app, that app's own window) — never simply "whatever
+  is in front", because a slow launch leaves the person's window there.
+- **`focus` follows the same rule.** It finds a window the run opened or
+  was already allowed into; a window the person had before the run is
+  taken only if it belongs to a reusable app, or the script itself says
+  `"reuse": true` on the step. Steps a model proposes mid-run (a rescue,
+  an `assist`) get no such say — `{"do": "focus", "window": "Notepad"}`
+  was exactly what a rescue reached for after `open notepad` found no new
+  window, and the person's Notepad got typed into.
+- A window the run is driving that **replaces itself** (Explorer does this
+  on the way to Control Panel) is followed to the window that took its
+  place — only if that one is the run's too.
 
 **`window` is the part that matters.** A launch returns the instant the
 process starts, long before anything is on screen, so without it the next
@@ -432,7 +518,7 @@ way to keep driving after the human has already said no.
 
 ## Testing
 
-`python tests/test_script.py` — 118 checks, no screen, no network, no
+`python tests/test_script.py` — 213 checks, no screen, no network, no
 clock beyond short sleeps. The scene is built by hand and the actuator is
 a recorder, so a failure means the logic changed rather than that the
 machine was busy.

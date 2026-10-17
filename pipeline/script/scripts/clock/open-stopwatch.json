@@ -1,0 +1,59 @@
+{
+  "name": "clock/open-stopwatch",
+  "version": 1,
+  "description": "Open the Windows Clock app and go to its Stopwatch page.",
+  "trust": "draft",
+  "listed": false,
+  "tags": [
+    "clock",
+    "stopwatch",
+    "saat",
+    "kronometre",
+    "alarms",
+    "timer",
+    "windows clock"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open the Windows Clock app and click Stopwatch in its navigation list. This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": false,
+  "note": "hidden: it got stuck on its first run and no fix was saved",
+  "steps": [
+    {
+      "do": "key",
+      "keys": "win",
+      "note": "Clock is not in the open.app list, so launch it from Start menu search."
+    },
+    {
+      "do": "wait",
+      "seconds": 1.5
+    },
+    {
+      "do": "type",
+      "value": "Clock",
+      "then": "enter",
+      "expect": {
+        "text": "Stopwatch",
+        "kind": "listitem",
+        "match": "exact"
+      }
+    },
+    {
+      "do": "focus",
+      "window": "Clock",
+      "timeout": 15.0
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Stopwatch",
+        "kind": "listitem",
+        "match": "exact"
+      },
+      "expect": {
+        "text": "Lap",
+        "kind": "button",
+        "match": "exact"
+      }
+    }
+  ]
+}

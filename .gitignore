@@ -56,7 +56,13 @@ agent/lessons.json
 agent/machine_profile.json
 agent/schedules.json
 agent/settings.json
+# Hand-made backups of it hold the same per-machine (and provider) config.
+agent/settings.json.bak*
 agent/macros/
+
+# The vision-grounding decision log: instructions, window titles and OCR
+# labels from this PC's screen.
+agent/grounding/decisions.jsonl
 
 # Learned caches — remembered selectors and which sites needed a headed
 # browser. They rebuild themselves, and they record where this PC has been.

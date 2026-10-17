@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from . import actuator, locator
+from . import actuator, grounding, locator
 from .locator import Element, ResolveResult
 from .schema import Locator, Step, Verify
 
@@ -312,7 +312,37 @@ def click_element(name: str | None = None, control: str | None = None,
     step = Step(action=Action.CLICK,
                 intent=f"Click {name or automation_id or text!r}",
                 locators=locs)
-    return do_step(step, scope, prefer=prefer)
+    res = do_step(step, scope, prefer=prefer)
+
+    # Nothing could name the target. If the vision fallback is switched on
+    # (core/grounding.py — off by default), a small local model is shown the
+    # window and asked where the target is, and its answer is gated, logged
+    # and clicked through the same actuator. Only for the plain miss: an
+    # ordinal or a neighbour names ONE of several, which a point cannot
+    # honour, and any other error already says what went wrong.
+    if (not res.ok and res.error == "no locator resolved" and not picky
+            and grounding.enabled()):
+        what = name or text or automation_id
+        d = grounding.click_by_vision(
+            f"click {what}" + (f" ({control})" if control else ""), scope,
+            target=what, prefer=prefer)
+        res.tried.append((-1, "vision:ground", d.clicked, round(d.seconds, 4)))
+        res.elapsed_s += d.seconds
+        if d.clicked:
+            res.ok, res.error = True, ""
+            res.locator_type, res.locator_index = "vision:ground", -1
+            # verified: True = an observable change followed the click,
+            # False = nothing changed (reported, never retried blindly),
+            # None = not checked (vision_grounding.verify off).
+            res.method, res.verified = d.method, d.verified
+            x, y = d.click_point or d.point
+            rect = d.click_rect or (x - 1, y - 1, x + 1, y + 1)
+            res.element = Element(rect=tuple(rect), name=what,
+                                  source="vision:ground", hwnd=scope or 0,
+                                  confidence=d.confidence or 0.0)
+        else:
+            res.error = f"no locator resolved; vision grounding: {d.reason}"
+    return res
 
 
 def find(name: str | None = None, control: str | None = None,

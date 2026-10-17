@@ -35,6 +35,12 @@ def complete(prompt: str, settings: dict | None = None,
              kind: str = "details") -> tuple[str, str]:
     """(answer text, how) - how is 'openrouter <ms>' or 'cli <ms>'."""
     settings = settings or {}
+    if settings.get("planning_engine") == "codex":
+        from . import codex_backend
+        codex_backend.configure(settings)
+        t0 = time.time()
+        text = codex_backend.call(prompt, timeout=max(timeout, 60), kind=kind)
+        return text, f"codex {int((time.time()-t0)*1000)} ms"
     key = _openrouter_key()
     t0 = time.time()
     if key:

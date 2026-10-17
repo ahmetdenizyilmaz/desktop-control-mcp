@@ -114,9 +114,27 @@ def rerank_says(idx, why="confidence 0.93"):
 
 
 eng = engine.ScriptEngine({}, say, client=FakeClient(offline=True))
+check("no Jev key: Claude is the decider, on its own",
+      eng._decider() == "claude", eng._decider())
+asked_claude: list[str] = []
+eng._claude_recognise = lambda task, rows: (
+    asked_claude.append(task) or ("migros/weekly-shop", "Claude chose"))
 name, why = eng.recognise("do my weekly shop")
-check("no Jev key: nothing is run, and the reason names Settings",
-      name is None and "Settings" in why, why)
+check("no Jev key: saved scripts are still recognised, by Claude",
+      name == "migros/weekly-shop" and asked_claude == ["do my weekly shop"],
+      f"{name} {why}")
+notices = [t for k, t in said if "Jev key" in t]
+check("and the person is told once, naming Settings",
+      len(notices) == 1 and "Settings" in notices[0], str(notices))
+eng._decider()
+check("the notice is not repeated",
+      len([t for k, t in said if "Jev key" in t]) == 1)
+eng._claude_choose = lambda goal, reject, opts, model="": "b"
+choose = eng._chooser()
+check("no Jev key: a pick step is decided by Claude, not refused",
+      choose("the red one", "", {"a": "blue", "b": "red"}) == ("b", 1.0))
+eng = engine.ScriptEngine({"decider": "claude"}, say, client=FakeClient())
+check("decider set to Claude stays Claude", eng._decider() == "claude")
 
 eng = engine.ScriptEngine({}, say, client=FakeClient())
 fast.rerank = rerank_says("migros/weekly-shop")
@@ -154,7 +172,7 @@ class FakeRunner:
 def engine_with(report, runner_none=False, params=None):
     e = engine.ScriptEngine({}, say, client=FakeClient())
     e.recognise = lambda task: ("migros/weekly-shop", "Jev chose it")
-    e.fill_params = lambda script, task: params if params is not None else {}
+    e.fill_params = lambda script, task, **kw: params if params is not None else {}
     e.execute = (lambda n, a, t="", **kw: None) if runner_none \
         else (lambda n, a, t="", **kw: FakeRunner(report))
     return e
@@ -162,9 +180,22 @@ def engine_with(report, runner_none=False, params=None):
 
 ok_rep = Report(script="migros/weekly-shop")
 ok_rep.outcomes.append(StepOutcome("x", "click", "clicked", True, 1))
+said.clear()
 out = engine_with(ok_rep).handle("weekly shop")
 check("a clean run is DONE - no Claude turn at all", out.kind == "done",
       out.kind)
+check("…and the person is TOLD: the result line reaches the feed in Claude mode",
+      any(k == "result" and t.startswith("Done with script migros/weekly-shop")
+          for k, t in said)
+      and any(k == "system" and t == "Jev chose it" for k, t in said),
+      str(said[:3]))
+said.clear()
+ec = engine.ScriptEngine({"planning_engine": "codex"}, say, client=FakeClient())
+ec.say("system", "Claude takes over")
+check("in Codex mode the same line arrives, renamed",
+      said == [("system", "Codex takes over")], str(said))
+from core import codex_backend as _cb                        # noqa: E402
+_cb.configure({})               # the Codex-mode engine switched it on
 
 stop_rep = Report(script="migros/weekly-shop", stopped=True,
                   stopped_by="'cancel' in the chat")
@@ -192,10 +223,44 @@ check("the handover says where and why it failed",
 
 out = engine_with(ok_rep, params=None).handle("weekly shop")
 e = engine_with(ok_rep)
-e.fill_params = lambda script, task: None
+e.fill_params = lambda script, task, **kw: None
 out = e.handle("play something")
 check("missing required details hand the task to Claude, not a guess",
       out.kind == "claude" and "needs details" in out.why, out.why)
+check("…naming the script, so a Repeat task does not learn a copy of it",
+      out.script == "migros/weekly-shop", str(out.script))
+
+# A script short of a detail asks for it only when someone pressed Run. A
+# scheduled run has nobody to ask: it must not wait an hour at the question.
+asked_kw: dict = {}
+e2 = engine_with(ok_rep)
+e2.fill_params = lambda script, task, **kw: (asked_kw.update(kw), None)[1]
+e2.handle("play something", interactive=False)
+sched_kw = dict(asked_kw)
+e2.handle("play something")
+check("a missing detail is asked for from the window, never on a scheduled run",
+      sched_kw.get("ask_missing") is False and asked_kw.get("ask_missing") is True,
+      f"scheduled={sched_kw} window={asked_kw}")
+
+import tools_sdk                                             # noqa: E402
+from core import quick as _quick, channel as _chan           # noqa: E402
+
+_real_complete, _real_ask_fn = _quick.complete, _chan.channel.ask
+_quick.complete = lambda *a, **k: ('{"product": null}', "fake")
+_chan.channel.ask = lambda q, **kw: _chan.Reply(_chan.Answer.TIMEOUT)
+e3 = engine.ScriptEngine({}, say, client=FakeClient())
+e3.recognise = lambda task: ("migros/add-product", "Jev chose it")
+e3.execute = lambda n, a, t="", **kw: FakeRunner(ok_rep)
+o3 = e3.handle("add something to the basket")
+check("asked and no answer came: the task goes to Claude, it is not stopped",
+      o3.kind == "claude" and o3.script == "migros/add-product"
+      and e3.awaiting_parameters, f"{o3.kind} {o3.why}")
+tools_sdk.set_cancelled(True)
+o4 = e3.handle("add something to the basket")
+tools_sdk.set_cancelled(False)
+check("asked and Stop pressed instead: stopped, and nothing ran",
+      o4.kind == "stopped" and o4.script == "migros/add-product", o4.kind)
+_quick.complete, _chan.channel.ask = _real_complete, _real_ask_fn
 
 out = engine_with(ok_rep, runner_none=True).handle("weekly shop")
 check("a run abandoned in a hung call reports stopped",
@@ -521,8 +586,26 @@ check("Claude may decline: a question is not a script",
       name4 is None and "not a screen task" in why4, why4)
 authoring._claude = real_claude
 
-# the engine uses it: no match -> author -> run -> verified
-ea = engine.ScriptEngine({"author_scripts": True}, say, client=FakeClient())
+# "Repeat task" decides whether a script is made at all, and author_when when
+asked_author = []
+authoring._claude = lambda *a, **k: asked_author.append(1) or "{}"
+for settings, rep_flag, label in (
+        ({"author_scripts": True}, False, "a one-off task"),
+        ({"author_scripts": True, "author_when": "before"}, False,
+         "a one-off task even with author_when=before"),
+        ({"author_scripts": True}, True, "a Repeat task with author_when=after")):
+    asked_author.clear()
+    e1 = engine.ScriptEngine(settings, say, client=FakeClient())
+    e1.recognise = lambda task: (None, "Jev: no saved script fits")
+    o1 = e1.handle("open paint", repeat=rep_flag)
+    check(f"{label}: no script written before the run, the agent does it",
+          o1.kind == "claude" and not o1.script and not asked_author,
+          f"{o1.kind} calls={len(asked_author)}")
+authoring._claude = real_claude
+
+# author_when=before + Repeat task: no match -> author -> run -> verified
+ea = engine.ScriptEngine({"author_scripts": True, "author_when": "before"}, say,
+                         client=FakeClient())
 ea.recognise = lambda task: (None, "Jev: no saved script fits")
 authoring._claude = fake_claude
 replies[:] = ['{"script": {"name": "paint/open", "description": "Open Paint",'
@@ -531,7 +614,7 @@ replies[:] = ['{"script": {"name": "paint/open", "description": "Open Paint",'
 ok_rep2 = Report(script="paint/open")
 ok_rep2.outcomes.append(StepOutcome("x", "open", "opened", True, 1))
 ea.execute = lambda n, a, t="", **kw: FakeRunner(ok_rep2)
-out = ea.handle("open paint")
+out = ea.handle("open paint", repeat=True)
 authoring._claude = real_claude
 lib_now = bridge.library()
 check("no saved script: Claude writes one, it runs, it is DONE",
@@ -558,11 +641,296 @@ check("after a takeover, Claude's fix is folded into the script",
       and bridge.library().local()["t/fixme"].steps[0].seconds == 2)
 
 # --------------------------------------------------------------------------
+print("\nRepeat task: the agent saves what worked, every name checked")
+# --------------------------------------------------------------------------
+import asyncio                                               # noqa: E402
+
+SEEN = ("Calculator — 80 controls\n  ButtonControl  One  id=num1Button\n"
+        "  ButtonControl  Two  id=num2Button\n  ButtonControl  Plus  id=plusButton\n"
+        "7/7 steps in 6.4s\n  ok   1. click 'Equals' via uia_name_type (uia:invoke)\n"
+        "  TextControl  Display is 42  id=CalculatorResults")
+learned = {"name": "calculator/add-two-numbers", "description": "Add two numbers",
+           "params": {"a": "12"}, "trust": "trusted", "steps": [
+               {"do": "open", "app": "calculator", "window": "Calculator"},
+               {"do": "click", "target": {"text": "One", "kind": "button",
+                                          "id": "num1Button"}},
+               {"do": "click", "target": {"text": "Plus", "match": "exact"}},
+               {"do": "click", "target": "{a}"},
+               {"do": "click", "target": "Equals",
+                "expect": {"id": "CalculatorResults"}}]}
+nm, msg = authoring.learn_script(json.dumps({"script": learned}), "12 + 30",
+                                 SEEN, engine="claude")
+got = bridge.library(fresh=True).local().get(nm or "")
+check("a script built from names the tools reported is saved",
+      nm == "calculator/add-two-numbers" and got is not None, msg)
+check("…as an unverified draft that remembers its task and engine",
+      got is not None and got.trust.value == "draft"
+      and got.extra.get("verified") is False and got.extra.get("learned_at")
+      and got.extra.get("source_task") == "12 + 30"
+      and got.extra.get("authored_by") == "claude")
+check("{param} targets are not checked against the run (they change)",
+      got is not None and got.params == {"a": "12"})
+made_up = json.loads(json.dumps(learned))
+made_up["name"] = "paint/select-tool-x"
+made_up["steps"][1]["target"] = {"text": "Object Select", "kind": "button"}
+nm2, msg2 = authoring.learn_script(made_up, "select", SEEN)
+check("a name no tool reported is refused, named, and nothing is saved",
+      nm2 is None and "'Object Select'" in msg2
+      and "paint/select-tool-x" not in bridge.library(fresh=True).local(), msg2)
+again = json.loads(json.dumps(learned))
+again["steps"] = again["steps"][:3]
+nm3, msg3 = authoring.learn_script("```json\n" + json.dumps(again) + "\n```",
+                                   "12 + 30", SEEN, replace=nm)
+lib3 = bridge.library(fresh=True).local()
+check("a corrected second save replaces this run's first one, no -2 copy",
+      nm3 == nm and len(lib3[nm].steps) == 3
+      and "calculator/add-two-numbers-2" not in lib3, msg3)
+no_open = json.loads(json.dumps(learned))
+no_open["name"] = "clock/stopwatch-x"
+no_open["steps"][0] = {"do": "open", "app": "start menu search", "window": "Calculator"}
+nm5, msg5 = authoring.learn_script(no_open, "clock", SEEN)
+check("an app the runner cannot open is refused before it is saved",
+      nm5 is None and "cannot open" in msg5 and "ms-clock:" in msg5, msg5[:160])
+uri_open = json.loads(json.dumps(learned))
+uri_open["name"] = "calculator/via-uri"
+uri_open["steps"][0] = {"do": "open", "app": "ms-calculator:", "window": "Calculator"}
+nm6, msg6 = authoring.learn_script(uri_open, "calc", SEEN)
+check("an app URI or a program on PATH is accepted", nm6 == "calculator/via-uri", msg6)
+nm4, msg4 = authoring.learn_script({"name": "Bad Name", "steps": []}, "x", SEEN)
+check("a bad name is refused with what to fix", nm4 is None and "name" in msg4,
+      msg4)
+# A name must have been reported WHOLE: "One" is inside "Done", and the
+# screen had no One.
+part = json.loads(json.dumps(learned))
+part["name"] = "calculator/part-of-a-word"
+part["steps"] = part["steps"][:2]
+nm7, msg7 = authoring.learn_script(
+    part, "x", "Calculator — 2 controls\n  ButtonControl  Done  id=doneButton\n"
+               "  ButtonControl  num1Button")
+check("a name that is only part of a reported word is refused",
+      nm7 is None and "'One'" in msg7 and "'num1Button'" not in msg7, msg7[:120])
+whole = json.loads(json.dumps(part))
+whole["name"] = "calculator/whole-words"
+nm8, msg8 = authoring.learn_script(
+    whole, "x", "Calculator — 2 controls\n  ButtonControl  One [1/2]  id=num1Button\n"
+                "  TextControl  Display is 42  id=CalculatorResults")
+check("a whole name, an id after id=, and a multi-word name are all found",
+      nm8 == "calculator/whole-words", msg8[:120])
+lp = authoring.learn_prompt("TASK: add 12 and 30")
+check("the learn request goes after the task, with the format and the "
+      "scripts it may call", lp.startswith("TASK: add 12 and 30")
+      and "REPEAT TASK" in lp and "SCRIPT FORMAT" in lp
+      and "EXISTING SCRIPTS YOUR SCRIPT MAY CALL" in lp)
+
+# the tool itself: off unless the task is a Repeat task; only real tool text counts
+tools_sdk.set_learning(False)
+r_off = asyncio.run(tools_sdk.save_script.handler({"script": json.dumps(learned)}))
+check("save_script refuses when Repeat task was not ticked",
+      "off for this task" in r_off["content"][0]["text"])
+tools_sdk.set_learning(True, "12 + 30 again", "claude")
+tools_sdk._observed("Calculator — controls: One id=num1Button, Plus, Equals, "
+                    "Display is 42 id=CalculatorResults")
+check("a tool's reply text is not what counts as seen - only what it observed",
+      "Equals" in "\n".join(tools_sdk._learning["seen"])
+      and tools_sdk._ok("Object Select") == {"content": [{"type": "text", "text": "Object Select"}]}
+      and "Object Select" not in "\n".join(tools_sdk._learning["seen"]))
+fresh_name = dict(learned, name="calculator/add-via-tool")
+r1 = asyncio.run(tools_sdk.save_script.handler(
+    {"script": json.dumps(dict(fresh_name, steps=fresh_name["steps"] + [
+        {"do": "click", "target": "Object Select"}]))}))
+t1 = r1["content"][0]["text"]
+check("save_script tells the agent which name was never reported",
+      "Not saved" in t1 and "Object Select" in t1, t1[:160])
+r2 = asyncio.run(tools_sdk.save_script.handler(
+    {"script": json.dumps(dict(fresh_name, steps=fresh_name["steps"] + [
+        {"do": "click", "target": "Object Select"}]))}))
+check("…and its own error text does not make the retry pass",
+      "Not saved" in r2["content"][0]["text"])
+r3 = asyncio.run(tools_sdk.save_script.handler({"script": json.dumps(fresh_name)}))
+check("fixed, it saves, and the app can see what was saved",
+      tools_sdk.learned() == "calculator/add-via-tool"
+      and "Saved calculator/add-via-tool" in r3["content"][0]["text"],
+      r3["content"][0]["text"][:160])
+
+# the real tools' error paths: a name that was only TRIED is not one that
+# was seen, even though the error reply quotes it
+import types as _tp                                          # noqa: E402
+
+_loc, _act = tools_sdk.locator, tools_sdk.act
+_real_loc = {k: getattr(_loc, k) for k in (
+    "find_window", "foreground_window", "window_title", "uia_root", "walk",
+    "_rect_of", "window_class", "list_windows", "invalidate_cache")}
+_real_act = {k: getattr(_act, k) for k in ("click_element", "do_step")}
+_real_snap = tools_sdk._controls_snapshot
+_act.click_element = lambda **kw: _tp.SimpleNamespace(
+    ok=False, error="no element matched", locator_type="", method="", verified=None)
+_loc.find_window = lambda title_contains=None, **kw: None
+r_click = asyncio.run(tools_sdk.click.handler({"name": "Object Select"}))
+r_find = asyncio.run(tools_sdk.find_controls.handler({"window": "Object Select"}))
+r_tried = asyncio.run(tools_sdk.save_script.handler(
+    {"script": json.dumps(dict(fresh_name, steps=fresh_name["steps"] + [
+        {"do": "click", "target": "Object Select"}]))}))
+check("a click that failed and a window that was not there echo the name…",
+      "Could not click 'Object Select'" in r_click["content"][0]["text"]
+      and "No window matching 'Object Select'" in r_find["content"][0]["text"])
+check("…and save_script still refuses it: trying a name is not seeing it",
+      "Not saved" in r_tried["content"][0]["text"]
+      and "'Object Select'" in r_tried["content"][0]["text"],
+      r_tried["content"][0]["text"][:120])
+
+# do_steps: a step that found its target counts, a FAIL row does not, the
+# control list after a failure does
+_loc.find_window = lambda title_contains=None, **kw: 1
+_loc.foreground_window = lambda: 1
+_loc.window_title = lambda h: "Calculator"
+tools_sdk._controls_snapshot = lambda h, cap=40: "  ButtonControl  Snapshot Only"
+_act.do_step = lambda step, scope, prefer="": (
+    _tp.SimpleNamespace(ok=True, locator_type="uia_name_type", method="uia:invoke",
+                        verified=None, error="")
+    if step.intent == "click 'Seven'" else
+    _tp.SimpleNamespace(ok=False, locator_type="", method="", verified=None,
+                        error="no element matched"))
+r_steps = asyncio.run(tools_sdk.do_steps.handler({"window": "Calculator", "steps": [
+    {"do": "click", "name": "Seven", "settle": 0},
+    {"do": "click", "name": "Object Select", "settle": 0}]}))
+seen_now = "\n".join(tools_sdk._learning["seen"])
+check("do_steps: the ok row and the control list are seen, the FAIL row is not",
+      "ok   1. click 'Seven'" in r_steps["content"][0]["text"]
+      and "FAIL 2. click 'Object Select'" in r_steps["content"][0]["text"]
+      and "Seven" in seen_now and "Snapshot Only" in seen_now
+      and "Object Select" not in seen_now, r_steps["content"][0]["text"][:200])
+
+# find_controls prints names and ids whole while learning: a script copies
+# them exactly, and a cut id never matches at replay
+_long = "A control whose name runs well past forty-eight characters"
+_lid = "a-very-long-automation-id-of-thirty-plus"
+_ctls = [_tp.SimpleNamespace(Name=_long, ControlTypeName="ButtonControl",
+                             AutomationId=_lid),
+         _tp.SimpleNamespace(Name="Seven", ControlTypeName="ButtonControl",
+                             AutomationId="num7Button")]
+_loc.uia_root = lambda h: object()
+_loc.walk = lambda root, **kw: iter(_ctls)
+_loc._rect_of = lambda c: (0, 0, 1, 1)
+_loc.window_class = lambda h: ""
+_loc.list_windows = lambda **kw: [{"hwnd": 2, "title": "Untitled - Paint",
+                                  "rect": (0, 0, 1, 1)}]
+_loc.invalidate_cache = lambda h=None: None
+r_full = asyncio.run(tools_sdk.find_controls.handler({"window": "Calc"}))["content"][0]["text"]
+check("while learning, find_controls shows the whole name and the whole id",
+      _long in r_full and f"id={_lid}" in r_full, r_full[:200])
+check("…and the other windows it lists count as seen (for open/focus)",
+      "Untitled - Paint" in "\n".join(tools_sdk._learning["seen"]))
+tools_sdk._learning["on"] = False
+r_cut = asyncio.run(tools_sdk.find_controls.handler({"window": "Calc"}))["content"][0]["text"]
+tools_sdk._learning["on"] = True
+check("…otherwise they are cut to fit the column, as before",
+      _long not in r_cut and _long[:30] in r_cut and f"id={_lid[:18]}" in r_cut
+      and f"id={_lid}" not in r_cut, r_cut[:200])
+for k, v in _real_loc.items():
+    setattr(_loc, k, v)
+for k, v in _real_act.items():
+    setattr(_act, k, v)
+tools_sdk._controls_snapshot = _real_snap
+
+# Stop reaches save_script like every other tool
+tools_sdk.set_cancelled(True)
+r_stop = asyncio.run(tools_sdk.save_script.handler({"script": json.dumps(fresh_name)}))
+tools_sdk.set_cancelled(False)
+check("save_script after Stop does nothing but say so",
+      r_stop["content"][0]["text"].startswith("STOP:"), r_stop["content"][0]["text"][:80])
+
+# a corrected save that turns out broken leaves the earlier one as it was
+broken = dict(fresh_name, steps=fresh_name["steps"] + [
+    {"do": "call", "script": "does/not-exist"}])
+r_broken = asyncio.run(tools_sdk.save_script.handler({"script": json.dumps(broken)}))
+kept = bridge.library(fresh=True).local().get("calculator/add-via-tool")
+check("a second save that does not resolve is refused and the first stays on disk",
+      "Not saved" in r_broken["content"][0]["text"] and kept is not None
+      and len(kept.steps) == len(fresh_name["steps"])
+      and tools_sdk.learned() == "calculator/add-via-tool",
+      r_broken["content"][0]["text"][:120])
+check("resolves() tells a usable saved script from a missing one",
+      authoring.resolves("calculator/add-via-tool")
+      and not authoring.resolves("does/not-exist"))
+bridge.library().path_of("calculator/add-via-tool").unlink()
+bridge.library(fresh=True)
+r_gone = asyncio.run(tools_sdk.save_script.handler({"script": json.dumps(broken)}))
+check("when nothing usable is left on disk, the run no longer claims a save",
+      "Not saved" in r_gone["content"][0]["text"] and tools_sdk.learned() is None,
+      r_gone["content"][0]["text"][:120])
+r_back = asyncio.run(tools_sdk.save_script.handler({"script": json.dumps(fresh_name)}))
+check("…and a good save after that is kept again",
+      tools_sdk.learned() == "calculator/add-via-tool", r_back["content"][0]["text"][:80])
+tools_sdk.set_learning(False)
+check("turning learning off forgets the run", tools_sdk.learned() is None
+      and tools_sdk._learning["seen"] == [])
+
+# a learned script is marked verified the first time Jev replays it cleanly
+er = engine.ScriptEngine({}, say, client=FakeClient())
+er.recognise = lambda task: ("calculator/add-via-tool", "Jev chose it")
+er.fill_params = lambda script, task, **kw: {"a": "12"}
+_helped = Report(script="calculator/add-via-tool")
+_helped.outcomes.append(StepOutcome("x", "click", "clicked", True, 1))
+er.execute = lambda n, a, t="", **kw: FakeRunner(_helped, helper=type("H", (), {"calls": 3})())
+er._phase("rescue_begin", {"where": "x.steps[1]", "try": 1, "of": 2})
+er.handle("12 + 30")
+check("a replay an Opus rescue had to finish does NOT verify a learned script",
+      bridge.library(fresh=True).local()["calculator/add-via-tool"].extra.get("verified")
+      is False)
+eo = engine.ScriptEngine({}, say, client=FakeClient())
+eo.recognise = lambda task: ("calculator/add-via-tool", "Jev chose it")
+eo.fill_params = lambda script, task, **kw: {"a": "12"}
+eo.execute = lambda n, a, t="", **kw: FakeRunner(_helped, helper=type("H", (), {"calls": 3})())
+eo._phase("assist_round", {"where": "x.steps[0]", "round": 1, "of": 6})
+eo.handle("12 + 30")
+check("…but an observe step's rounds are the script's own work: it is verified",
+      bridge.library(fresh=True).local()["calculator/add-via-tool"].extra.get("verified")
+      is True)
+authoring.mark(bridge.library(), "calculator/add-via-tool", verified=False)
+ev = engine.ScriptEngine({}, say, client=FakeClient())
+ev.recognise = lambda task: ("calculator/add-via-tool", "Jev chose it")
+ev.fill_params = lambda script, task, **kw: {"a": "12"}
+ok_rep3 = Report(script="calculator/add-via-tool")
+ok_rep3.outcomes.append(StepOutcome("x", "click", "clicked", True, 1))
+ev.execute = lambda n, a, t="", **kw: FakeRunner(ok_rep3)
+o5 = ev.handle("12 + 30")
+check("a learned script's first clean replay marks it verified",
+      o5.kind == "done" and bridge.library(fresh=True).local()[
+          "calculator/add-via-tool"].extra.get("verified") is True)
+
+# --------------------------------------------------------------------------
 print("\nthe Scripts tab")
 # --------------------------------------------------------------------------
 import app as appmod                                         # noqa: E402
 
 ag = appmod.Agent()
+_route_kw = {}
+_real_handle = engine.ScriptEngine.handle
+engine.ScriptEngine.handle = (lambda self, task, forced=None, repeat=False,
+                              interactive=True:
+                              _route_kw.update(repeat=repeat,
+                                               interactive=interactive))
+ag._repeat, ag._forced = True, None
+ag.settings["scripts_first"] = True
+ag._route("12 + 30")
+check("the app hands the Repeat task tick to the engine",
+      _route_kw.get("repeat") is True and _route_kw.get("interactive") is True,
+      str(_route_kw))
+ag._scheduled = True
+ag._route("12 + 30")
+check("a scheduled run tells the engine nobody is at the window",
+      _route_kw.get("interactive") is False, str(_route_kw))
+ag._scheduled = False
+engine.ScriptEngine.handle = _real_handle
+ag._repeat = False
+_rt_kw: dict = {}
+_rt = ag.run_task
+ag.run_task = lambda text, repeat=False, scheduled=False: (
+    _rt_kw.update(text=text, repeat=repeat, scheduled=scheduled), {"ok": True})[1]
+ag._run_scheduled(type("S", (), {"task": "night shop", "job_id": ""})())
+ag.run_task = _rt
+check("the scheduler starts its task as a Repeat task, marked scheduled",
+      _rt_kw == {"text": "night shop", "repeat": True, "scheduled": True}, str(_rt_kw))
 ls = ag.list_scripts()
 sites = {g["site"] for g in ls["groups"]}
 check("scripts are grouped by site/app",
@@ -624,11 +992,27 @@ check("an old settings file is migrated: version set, values cleaned",
       and mig["automation_level"] == "auto")
 check("…and new settings get their defaults",
       mig["decider"] == "jev" and mig["scripts_first"] is True)
+check("a fresh settings file sends Claude through the login, never a paid key",
+      appmod.DEFAULTS["claude_transport"] == "cli"
+      and mig["claude_transport"] == "cli", str(mig["claude_transport"]))
 appmod.SETTINGS_FILE.write_text("{broken", encoding="utf-8")
 bad = appmod.load_settings()
 check("a corrupt settings file is kept aside, not silently lost",
       appmod.SETTINGS_FILE.with_suffix(".broken.json").exists()
       and bad["decider"] == "jev")
+
+from core import grounding as _gr                              # noqa: E402
+
+_gr.configure({})
+appmod.SETTINGS_FILE.write_text(json.dumps({
+    "settings_version": 2,
+    "vision_grounding": dict(_gr.DEFAULTS, enabled=True, dry_run=True)}),
+    encoding="utf-8")
+appmod.Agent()
+check("a saved vision_grounding block is live right after a restart",
+      _gr.enabled() is True and _gr.history_provider is not None)
+_gr.configure({})
+appmod.SETTINGS_FILE.unlink()
 
 keys.save_jev_key("typesafe", "ts-secret-XYZ")
 state_text = json.dumps(ag.get_state(), default=str)
@@ -660,6 +1044,8 @@ check("every instant-save control maps to a known setting",
       str(sorted(data_keys - set(appmod.SETTINGS_SCHEMA))))
 dup = [i for i in ids if html.count(f'id="{i}"') > 1]
 check("no element id is used twice", not dup, str(dup))
+check("Repeat task is ticked per task, never remembered between runs",
+      "repeat-task" not in html and 'getElementById("repeat").checked' in html)
 
 
 # --------------------------------------------------------------------------
@@ -739,6 +1125,12 @@ ag._ledger = ledger_mod.current
 uv = ag._usage_view()
 check("the window's cost includes what the agent did NOT spend itself",
       abs(uv.get("cost", 0) - (0.12 + 0.00003)) < 1e-9, str(uv.get("cost")))
+check("the ledger's agent line is the agent's own bill, not the task total",
+      abs((type(ag)._agent_own_cost({"cost": 0.62003, "extra_cost": 0.12003})
+           or 0) - 0.5) < 1e-9
+      and type(ag)._agent_own_cost({"cost": 0.12003, "extra_cost": 0.12003})
+      is None
+      and abs((type(ag)._agent_own_cost({"cost": 0.4}) or 0) - 0.4) < 1e-9)
 ag._ledger = None
 ledger_mod.current = None
 

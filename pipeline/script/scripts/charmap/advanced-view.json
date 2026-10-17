@@ -1,0 +1,108 @@
+{
+  "name": "charmap/advanced-view",
+  "version": 2,
+  "description": "Open Character Map and turn on its Advanced view.",
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "character map",
+    "charmap",
+    "advanced view",
+    "special characters",
+    "unicode",
+    "symbols",
+    "karakter eşlem",
+    "gelişmiş görünüm",
+    "özel karakterler"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open Character Map (charmap) and click its Advanced view checkbox to turn it on. This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "patched_by": "claude",
+  "patched_at": "2026-10-16 03:12",
+  "steps": [
+    {
+      "do": "open",
+      "app": "charmap",
+      "window": "Character Map",
+      "timeout": 15.0,
+      "optional": true,
+      "note": "charmap is not in the known app list; if this launch fails, the Run dialog below starts it."
+    },
+    {
+      "do": "if",
+      "present": {
+        "text": "Advanced view",
+        "kind": "checkbox"
+      },
+      "then": [
+        {
+          "do": "focus",
+          "window": "Character Map",
+          "timeout": 10.0
+        }
+      ],
+      "else": [
+        {
+          "do": "open",
+          "app": "charmap.exe",
+          "window": "Character Map",
+          "timeout": 15.0,
+          "expect": {
+            "text": "Advanced view",
+            "kind": "checkbox"
+          },
+          "note": "Win+R does not go through on this machine; launch charmap.exe directly."
+        },
+        {
+          "do": "focus",
+          "window": "Character Map",
+          "timeout": 15.0
+        },
+        {
+          "do": "focus",
+          "window": "Run",
+          "timeout": 10.0
+        },
+        {
+          "do": "type",
+          "value": "charmap",
+          "then": "enter",
+          "expect": {
+            "text": "Advanced view",
+            "kind": "checkbox"
+          }
+        },
+        {
+          "do": "focus",
+          "window": "Character Map",
+          "timeout": 15.0
+        }
+      ]
+    },
+    {
+      "do": "if",
+      "present": "Group by",
+      "then": [
+        {
+          "do": "expect",
+          "target": {
+            "text": "Advanced view",
+            "kind": "checkbox"
+          },
+          "note": "Advanced view is already on; clicking again would turn it off."
+        }
+      ],
+      "else": [
+        {
+          "do": "click",
+          "target": {
+            "text": "Advanced view",
+            "kind": "checkbox"
+          },
+          "expect": "Group by"
+        }
+      ]
+    }
+  ]
+}

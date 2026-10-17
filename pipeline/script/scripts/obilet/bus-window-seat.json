@@ -1,0 +1,79 @@
+{
+  "name": "obilet/bus-window-seat",
+  "version": 1,
+  "description": "Find a night bus on Obilet from one city to another on a given date, choose a window seat confirmed on the seat map, and stop at the passenger/payment form.",
+  "params": {
+    "origin": "Ankara",
+    "destination": "Fethiye",
+    "date": "29 September 2026",
+    "night_window": "between 20:00 and 05:00"
+  },
+  "trust": "draft",
+  "listed": false,
+  "tags": [
+    "obilet",
+    "bus",
+    "otobüs",
+    "otobüs bileti",
+    "bus ticket",
+    "night bus",
+    "gece otobüsü",
+    "window seat",
+    "cam kenarı",
+    "koltuk seçimi",
+    "sefer"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open Obilet. Find Ankara → Fethiye buses departing on 29 September 2026 at night. Verify a window seat from the seat map. Stop when personal  details or payment information are required. Enable full logging.",
+  "verified": false,
+  "note": "hidden: it got stuck on its first run and no fix was saved",
+  "steps": [
+    {
+      "do": "open",
+      "app": "chrome",
+      "url": "https://www.obilet.com",
+      "window": "obilet",
+      "timeout": 45.0
+    },
+    {
+      "do": "call",
+      "script": "browser/dismiss"
+    },
+    {
+      "do": "observe",
+      "goal": "Search Obilet for BUS trips (otobüs, not flights) from {origin} to {destination} with departure date {date}. Set the origin to {origin}, the destination to {destination} and the date to {date} in the search form, then run the search. Stop when the list of bus trips for {origin} → {destination} on {date} is shown. Do not pick a trip yet.",
+      "rounds": 8,
+      "expect": {
+        "text": "{destination}",
+        "area": "content"
+      }
+    },
+    {
+      "do": "observe",
+      "goal": "On the results page, confirm that the listed trips are {origin} → {destination} and dated {date}. Find a trip whose departure time on the page is at night ({night_window}) on {date}. Open that trip's seat map. If no trip departing {night_window} on {date} is listed, do not open any trip and do not reach the completion state.",
+      "rounds": 8,
+      "expect": {
+        "text": "Koltuk",
+        "area": "content"
+      }
+    },
+    {
+      "do": "observe",
+      "goal": "On the open seat map, select exactly ONE free seat that the seat map itself shows as a WINDOW seat. Use the map's legend, a window/cam kenarı label, or the seat's tooltip, or its position in the outermost column next to the bus wall. A seat number alone is NOT proof. Do not pick taken or blocked seats. If no seat can be proven to be a window seat from the page, do not select any seat and do not reach the completion state. After selecting, confirm the page shows this seat as selected.",
+      "rounds": 8,
+      "expect": {
+        "text": "Cam",
+        "area": "content"
+      }
+    },
+    {
+      "do": "observe",
+      "goal": "With the proven window seat selected on the night trip {origin} → {destination} on {date}, press the site's continue/confirm button to move to the next step. Stop as soon as a form asking for passenger personal details (name, ID number, phone, e-mail) or payment information appears. Do not type anything into that form and do not pay.",
+      "rounds": 6,
+      "expect": {
+        "kind": "edit",
+        "area": "content"
+      }
+    }
+  ]
+}

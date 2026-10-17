@@ -45,15 +45,28 @@ if str(_AGENT) not in sys.path:
 #: root itself, which for a window root matches far too eagerly.
 SCOPE = 2 | 4
 
+#: What a query may hand back: the walk's kinds, plus a static TEXT control.
+#: The walk leaves text to OCR, but a query only ever returns what a
+#: selector named exactly (an id, an exact name), and dropping a match here
+#: reads as "conclusively absent": Calculator's display (id
+#: CalculatorResults, "Display is 0") and its mode header failed every
+#: `expect` on 2026-10-16 while plainly on screen.
+QUERY_KINDS = {**KINDS, "TextControl": "text"}
+
 #: Our plain kind word -> the UIA ControlType id, for a property condition.
-#: Built by inverting `KINDS` so the two can never drift apart.
+#: Built by inverting `QUERY_KINDS` so the two can never drift apart.
 _TYPE_ID: dict[str, list[int]] = {}
+
+
+def queryable(kind: str) -> bool:
+    """Can a property condition express this kind at all?"""
+    return not kind or kind.lower() in _type_ids()
 
 
 def _type_ids() -> dict[str, list[int]]:
     if not _TYPE_ID:
         import uiautomation as auto
-        for type_name, kind in KINDS.items():
+        for type_name, kind in QUERY_KINDS.items():
             got = getattr(auto.ControlType, type_name, None)
             if got is not None:
                 _TYPE_ID.setdefault(kind, []).append(int(got))
@@ -115,7 +128,7 @@ def _to_element(raw: Any) -> Element | None:
         ctrl = auto.Control.CreateControlFromElement(raw)
         if ctrl is None:
             return None
-        kind = KINDS.get(ctrl.ControlTypeName)
+        kind = QUERY_KINDS.get(ctrl.ControlTypeName)
         if not kind:
             return None
         r = ctrl.BoundingRectangle

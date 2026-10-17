@@ -1,0 +1,189 @@
+{
+  "name": "calculator/compute",
+  "version": 4,
+  "description": "Open Calculator and work out a sum like 12 + 30, leaving the result on screen.",
+  "params": {
+    "expression": "12+30"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "calculator",
+    "calculate",
+    "compute",
+    "add",
+    "sum",
+    "math",
+    "hesap makinesi",
+    "hesapla",
+    "topla",
+    "toplama",
+    "işlem"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open Calculator and compute 12 + 30. Leave the result on screen. This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "patched_by": "claude",
+  "patched_at": "2026-10-15 22:53",
+  "steps": [
+    {
+      "do": "open",
+      "app": "calculator",
+      "window": "Calculator",
+      "timeout": 30.0
+    },
+    {
+      "do": "wait_for",
+      "target": {
+        "id": "CalculatorResults"
+      },
+      "timeout": 30.0,
+      "note": "The Calculator app can take a while before its display appears in the accessibility tree."
+    },
+    {
+      "do": "focus",
+      "window": "Calculator",
+      "timeout": 15.0
+    },
+    {
+      "do": "if",
+      "present": {
+        "text": "Standard",
+        "id": "Header"
+      },
+      "else": [
+        {
+          "do": "click",
+          "target": {
+            "kind": "button",
+            "id": "TogglePaneButton"
+          },
+          "expect": {
+            "text": "Standard",
+            "id": "Header"
+          },
+          "optional": true,
+          "note": "Header reads 'Standard Calculator mode' when already in Standard mode; this fallback must not block the run."
+        }
+      ]
+    },
+    {
+      "do": "click",
+      "target": {
+        "text": "Clear",
+        "kind": "button",
+        "match": "exact",
+        "id": "clearButton"
+      },
+      "expect": {
+        "text": "Display is 0",
+        "match": "exact",
+        "id": "CalculatorResults"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "kind": "button",
+        "id": "num1Button"
+      },
+      "expect": {
+        "text": "Display is 1",
+        "match": "exact",
+        "id": "CalculatorResults"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "kind": "button",
+        "id": "num2Button"
+      },
+      "expect": {
+        "text": "Display is 12",
+        "match": "exact",
+        "id": "CalculatorResults"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "kind": "button",
+        "id": "plusButton"
+      },
+      "expect": {
+        "text": "+",
+        "id": "CalculatorExpression"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "kind": "button",
+        "id": "num3Button"
+      },
+      "expect": {
+        "text": "Display is 3",
+        "match": "exact",
+        "id": "CalculatorResults"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "kind": "button",
+        "id": "num0Button"
+      },
+      "expect": {
+        "text": "Display is 30",
+        "match": "exact",
+        "id": "CalculatorResults"
+      }
+    },
+    {
+      "do": "click",
+      "target": {
+        "kind": "button",
+        "id": "equalButton"
+      },
+      "expect": {
+        "text": "Display is 42",
+        "match": "exact",
+        "id": "CalculatorResults"
+      },
+      "note": "The result stays on screen and the Calculator window is left open."
+    },
+    {
+      "do": "key",
+      "keys": "escape",
+      "expect": {
+        "text": "Display is 0",
+        "match": "exact",
+        "id": "CalculatorResults"
+      },
+      "note": "Clear any earlier calculation."
+    },
+    {
+      "do": "type",
+      "value": "{expression}",
+      "then": "enter",
+      "expect": {
+        "text": "=",
+        "id": "CalculatorExpression"
+      },
+      "gone": {
+        "text": "Display is 0",
+        "match": "exact",
+        "id": "CalculatorResults"
+      }
+    },
+    {
+      "do": "expect",
+      "target": {
+        "kind": "text",
+        "id": "CalculatorResults"
+      },
+      "note": "The result stays on screen and the Calculator window is left open."
+    }
+  ]
+}

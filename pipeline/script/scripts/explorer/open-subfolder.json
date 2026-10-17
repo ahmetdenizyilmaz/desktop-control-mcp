@@ -1,0 +1,81 @@
+{
+  "name": "explorer/open-subfolder",
+  "version": 2,
+  "description": "Open File Explorer at a folder and double-click one of its subfolders to open it.",
+  "params": {
+    "path": "C:\\Windows\\Web",
+    "path_title": "Web",
+    "folder": "Wallpaper"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "file explorer",
+    "explorer",
+    "open folder",
+    "subfolder",
+    "double click folder",
+    "browse folder",
+    "wallpaper",
+    "klasör aç",
+    "dosya gezgini",
+    "alt klasör"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open File Explorer at C:\\Windows\\Web and open the Wallpaper folder by double-clicking it (do not type a path). This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "patched_by": "claude",
+  "patched_at": "2026-10-16 03:07",
+  "steps": [
+    {
+      "do": "open",
+      "app": "explorer",
+      "window": "File Explorer",
+      "timeout": 30.0
+    },
+    {
+      "do": "key",
+      "keys": "ctrl+l"
+    },
+    {
+      "do": "type",
+      "value": "{path}",
+      "then": "enter",
+      "expect": {
+        "text": "{folder}",
+        "kind": "listitem",
+        "match": "exact"
+      },
+      "note": "Address bar is used only to reach the starting folder; the subfolder is still opened by double-click."
+    },
+    {
+      "do": "focus",
+      "window": "{path_title}",
+      "timeout": 15.0,
+      "expect": {
+        "text": "{folder}",
+        "kind": "listitem",
+        "match": "exact"
+      }
+    },
+    {
+      "do": "double_click",
+      "target": {
+        "text": "{folder}",
+        "kind": "listitem",
+        "match": "exact"
+      },
+      "gone": {
+        "text": "{folder}",
+        "kind": "listitem",
+        "match": "exact"
+      }
+    },
+    {
+      "do": "focus",
+      "window": "{folder}",
+      "timeout": 15.0,
+      "note": "This step only passes if the window title has changed to the subfolder. The window stays open."
+    }
+  ]
+}

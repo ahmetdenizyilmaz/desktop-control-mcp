@@ -453,7 +453,9 @@ def step_json(step: Step) -> dict:
         if step.authorizes:
             out["authorizes"] = True
         out["timeout"] = step.timeout
-    if step.do == "assist":
+    if step.do == "capture":
+        out["save_as"] = step.save_as
+    if step.do in ("assist", "observe"):
         out["goal"] = step.goal
         out["rounds"] = step.rounds
     if step.keys:

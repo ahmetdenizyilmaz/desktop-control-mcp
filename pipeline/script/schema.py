@@ -60,7 +60,7 @@ REACH_KINDS = ("open", "focus")
 
 #: Steps that decide or wait. These change control flow, never the screen.
 FLOW_KINDS = ("wait", "wait_for", "if", "repeat", "call", "wait_message",
-              "assist")
+              "assist", "observe", "capture")
 
 #: Steps that assert. A script without these fails silently three steps
 #: later — `replay.py`'s most expensive lesson, and one the Migros run
@@ -84,7 +84,7 @@ PARAM = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 #: param in `do` could turn a `wait` into a `click` at run time, which is
 #: exactly the class of surprise this format exists to prevent.
 SUBSTITUTABLE = ("value", "text", "keys", "script", "any", "url", "app",
-                 "window", "id")
+                 "window", "id", "goal")
 
 
 class Trust(str, Enum):
@@ -315,6 +315,7 @@ class Step:
     #: stronger model with a screenshot, a few steps at a time.
     goal: str = ""
     rounds: int = 4
+    save_as: str = ""
     note: str = ""
 
 
@@ -422,7 +423,7 @@ def _step(raw: Any, where: str) -> Step:
              note=str(raw.get("note", "")))
 
     if do in ("click", "double_click", "right_click", "move",
-              "drag", "expect", "gone", "wait_for"):
+              "drag", "expect", "gone", "wait_for", "capture"):
         s.target = _selector(raw.get("target"), f"{where}.target")
     if do == "scroll" and raw.get("target") is not None:
         # Optional: scrolling the focused pane is the common case, and
@@ -459,6 +460,10 @@ def _step(raw: Any, where: str) -> Step:
         if not s.window:
             raise ScriptError(f"{where}: focus needs a window title")
         s.maximize = bool(raw.get("maximize", True))
+        # Default FALSE here, unlike `open`: a `focus` may take a window the
+        # person had before the run only if the script says so outright
+        # (or the window is a reusable app's - the runner decides that).
+        s.reuse = bool(raw.get("reuse", False))
         s.timeout = float(raw.get("timeout", 15.0))
     if do == "scroll":
         s.direction = str(raw.get("direction", "down")).lower()
@@ -504,7 +509,15 @@ def _step(raw: Any, where: str) -> Step:
         s.timeout = float(raw.get("timeout", 1800.0))
         if not 0 < s.timeout <= 7200:
             raise ScriptError(f"{where}: timeout must be 0-7200")
-    if do == "assist":
+    if do == "capture":
+        s.save_as = str(raw.get("save_as", ""))
+        if not PARAM.fullmatch("{" + s.save_as + "}"):
+            raise ScriptError(f"{where}: capture needs a valid save_as name")
+        if s.optional:
+            raise ScriptError(f"{where}: capture cannot be optional")
+    if do in ("assist", "observe"):
+        if do == "observe" and not raw.get("expect"):
+            raise ScriptError(f"{where}: observe needs an expect completion check")
         s.goal = str(raw.get("goal", "")).strip()
         if not s.goal:
             raise ScriptError(f"{where}: assist needs a goal")
@@ -694,3 +707,7 @@ def check_params(script: Script) -> None:
             raise ScriptError(
                 f"{script.name}.steps[{i}]: uses {sorted(unknown)} but the "
                 f"script declares {sorted(declared) or 'no parameters'}")
+        if step.do == "capture":
+            if step.save_as in declared:
+                raise ScriptError(f"{script.name}: capture cannot overwrite {step.save_as}")
+            declared.add(step.save_as)

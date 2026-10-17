@@ -1,0 +1,99 @@
+{
+  "name": "wikipedia/open-link",
+  "version": 1,
+  "description": "Open a Wikipedia page and click one of its links, like Current events on the Main Page.",
+  "params": {
+    "url": "https://en.wikipedia.org/wiki/Main_Page",
+    "link": "Current events",
+    "page": "Portal:Current events"
+  },
+  "trust": "draft",
+  "listed": true,
+  "tags": [
+    "wikipedia",
+    "wiki",
+    "current events",
+    "news",
+    "open link",
+    "click link",
+    "vikipedi",
+    "güncel olaylar",
+    "bağlantıya tıkla"
+  ],
+  "authored_by": "claude",
+  "source_task": "Open https://en.wikipedia.org/wiki/Main_Page and click the \"Current events\" link. This is an unattended test. Do not wait for a person. Decide yourself. Never buy, send, submit, save or delete anything. Leave the application window open when you are done.",
+  "verified": true,
+  "steps": [
+    {
+      "do": "open",
+      "app": "chrome",
+      "url": "{url}",
+      "window": "Wikipedia",
+      "timeout": 45.0
+    },
+    {
+      "do": "call",
+      "script": "browser/dismiss",
+      "optional": true
+    },
+    {
+      "do": "if",
+      "present": {
+        "text": "{link}",
+        "kind": "link",
+        "match": "exact",
+        "area": "content"
+      },
+      "then": [
+        {
+          "do": "click",
+          "target": {
+            "text": "{link}",
+            "kind": "link",
+            "match": "exact",
+            "area": "content"
+          },
+          "expect": {
+            "text": "{page}",
+            "area": "content"
+          }
+        }
+      ],
+      "else": [
+        {
+          "do": "click",
+          "target": {
+            "text": "Main menu",
+            "area": "content"
+          },
+          "expect": {
+            "text": "{link}",
+            "kind": "link",
+            "match": "exact",
+            "area": "content"
+          },
+          "note": "Narrow windows fold the sidebar links into the Main menu."
+        },
+        {
+          "do": "click",
+          "target": {
+            "text": "{link}",
+            "kind": "link",
+            "match": "exact",
+            "area": "content"
+          },
+          "expect": {
+            "text": "{page}",
+            "area": "content"
+          }
+        }
+      ]
+    },
+    {
+      "do": "focus",
+      "window": "{page}",
+      "timeout": 20.0,
+      "note": "The tab title only has the destination page name after the link has opened. The window is left open."
+    }
+  ]
+}

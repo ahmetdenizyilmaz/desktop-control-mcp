@@ -43,6 +43,9 @@ from . import paths
 DEFAULT_MIN_CONFIDENCE = 0.6
 #: More candidates than this and the probability spreads too thin to trust.
 MAX_CANDIDATES = 8
+#: The "no Jev key, Claude decides" notice is given once per app session,
+#: not once per task.
+_SAID_NO_JEV = False
 #: How long a person must leave the machine alone before a paused script
 #: takes it back.
 IDLE_TO_RESUME_S = 5.0
@@ -146,7 +149,14 @@ class ScriptEngine:
                  provider_env: dict | None = None,
                  client=None, cancel_watch=None) -> None:
         self.settings = settings
-        self.say = say
+        from . import codex_backend
+        codex_backend.configure(settings)
+        # The if/else picks the function; it must not sit inside the lambda,
+        # or in Claude mode `self.say(kind, text)` evaluates to `say` and
+        # never calls it - every "Jev chose", "Done with script" and
+        # "paused" line went nowhere.
+        self.say = ((lambda kind, text: say(kind, text.replace("Claude", "Codex")))
+                    if settings.get("planning_engine") == "codex" else say)
         self._set_status = set_status or (lambda s: None)
         self._set_current = set_current or (lambda c: None)
         self.provider_env = provider_env or {}
@@ -158,6 +168,11 @@ class ScriptEngine:
         self._last_event = self._last_acted = time.time()
         self._waiting = self._rescuing = False
         self._extended = 0.0
+        #: Rescues of a stuck step in this run (rescue_begin phases). Not
+        #: the helper's call count: that also counts observe/assist rounds,
+        #: which a script asks for by design and which must not keep it
+        #: from being marked verified.
+        self._rescues = 0
         #: This run's resume record (core/checkpoint.py).
         self.checkpoint = None
 
@@ -188,9 +203,6 @@ class ScriptEngine:
         if self._decider() == "claude":
             return self._claude_recognise(task, rows)
         client = self.jev()
-        if client.offline:
-            return None, ("Jev has no key (Settings → Engines) — going "
-                          "straight to Claude")
         cands = rows
         if len(rows) > MAX_CANDIDATES:
             from .retrieval import Index
@@ -276,13 +288,14 @@ class ScriptEngine:
             return None
 
     # -- 2. parameters ----------------------------------------------------
-    def fill_params(self, script, task: str) -> dict | None:
+    def fill_params(self, script, task: str, *, ask_missing: bool = False) -> dict | None:
         """Values for the script's parameters, taken from the task.
 
         Jev chooses; it cannot write. Pulling "la serenissima" out of "play
         la serenissima on spotify" is generation, so it is one short Claude
         call - and only when the script has a parameter without a default.
         """
+        self.awaiting_parameters = False
         needed = {k: v for k, v in script.params.items()}
         if not needed:
             return {}
@@ -319,9 +332,30 @@ class ScriptEngine:
             v = got.get(k)
             if v is None or str(v).strip() == "":
                 if default == "":
-                    return None
-                v = default
+                    if not ask_missing:
+                        return None
+                    from . import channel as chan
+                    import tools_sdk
+                    self.awaiting_parameters = True
+                    self._status("asking", script=script.name,
+                                 detail=f"Waiting for {k}")
+                    reply = chan.channel.ask(
+                        f"To run {script.name}, I need {k}. What value should I use? "
+                        "You can stop this task if you prefer to fill it on the website.",
+                        approve_deny=False, timeout_s=self._limit_s(),
+                        cancelled=tools_sdk.should_stop)
+                    if (tools_sdk.should_stop() or reply.answer != chan.Answer.TEXT
+                            or not reply.text.strip()):
+                        # Stop, or no answer (timed out, nobody reachable):
+                        # None either way, and awaiting_parameters stays
+                        # True - asked, and still without it. The caller
+                        # tells the two apart with should_stop().
+                        return None
+                    v = reply.text.strip()
+                else:
+                    v = default
             out[k] = str(v)
+        self.awaiting_parameters = False
         return out
 
     # -- 3. execute -------------------------------------------------------
@@ -414,6 +448,7 @@ class ScriptEngine:
             self._last_acted = time.time()
         elif kind == "rescue_begin":
             self._rescuing = True
+            self._rescues += 1
             self._status("rescuing", detail=f"stuck at {where} — Claude "
                          f"rescue {info.get('try')}/{info.get('of')}")
         elif kind == "rescue_end":
@@ -422,6 +457,12 @@ class ScriptEngine:
             self._rescuing = True
             self._status("rescuing", detail=f"Claude working it out "
                          f"(round {info.get('round')}/{info.get('of')})")
+        elif kind in ("checkpoint", "observation"):
+            from . import tasklog
+            tasklog.event(kind, **info)
+            if kind == "checkpoint":
+                self._rescuing = False
+                self._status("acting", detail="Verified " + where)
         elif kind == "item_end":
             if self.checkpoint is not None:
                 self.checkpoint.item(str(info.get("item", "")),
@@ -511,8 +552,28 @@ class ScriptEngine:
     def _decider(self) -> str:
         """Who makes the quick decisions - which saved script, which
         product. "jev" (default: ~0.4 s, a fraction of a cent) or "claude"
-        (a Claude model: seconds per decision, far dearer, no Jev key)."""
-        return (self.settings.get("decider") or "jev").lower()
+        (a Claude model: seconds per decision, far dearer, no Jev key).
+
+        Jev chosen but no key saved means Claude decides, on its own: a
+        missing key takes away the fast path, not the saved scripts. (Until
+        2026-10-17 it skipped every saved script instead, and the agent
+        planned each task from scratch.) Jev itself is never called then -
+        its offline stub answers from a hash, not a model.
+        """
+        want = (self.settings.get("decider") or "jev").lower()
+        if want == "jev" and self.jev().offline:
+            self._say_no_jev_once()
+            return "claude"
+        return want
+
+    def _say_no_jev_once(self) -> None:
+        global _SAID_NO_JEV
+        if _SAID_NO_JEV:
+            return
+        _SAID_NO_JEV = True
+        self.say("system", "No Jev key saved — Claude makes the quick "
+                           "decisions instead (slower). A key under Settings "
+                           "→ Engines brings the fast path back.")
 
     def _decider_model(self) -> str:
         return self.settings.get("decider_model") or "claude-opus-5-5"
@@ -550,6 +611,10 @@ class ScriptEngine:
         from . import claude_api
 
         def caller(prompt, shot):
+            from . import codex_backend
+            if codex_backend.enabled():
+                return (codex_backend.call(prompt, images=[shot] if shot else (),
+                                           kind="rescue", record=False), None)
             got = claude_api.call(prompt, model, images=[shot] if shot else (),
                                   max_tokens=6000, kind="rescue", record=False)
             return None if got is None else (got.text, got.cost)
@@ -625,6 +690,7 @@ class ScriptEngine:
             task=task)
         self._last_event = self._last_acted = time.time()
         self._waiting = self._rescuing = False
+        self._rescues = 0
         holder: dict = {}
 
         def job():
@@ -638,20 +704,25 @@ class ScriptEngine:
                 helper = OpusHelper(
                     model=self.settings.get("rescue_model") or "opus",
                     budget=int(self.settings.get("rescue_budget") or 12),
-                    log=lambda m: self.say("system", m.strip()),
+                    log=lambda m: self.say("system", m.strip().replace("[opus]", "[codex]")
+                                          if self.settings.get("planning_engine") == "codex" else m.strip()),
                     stuck_dir=paths.data("workspace", "stuck",
                                          ".keep").parent,
                     env=self.provider_env)
             if helper is not None:
                 from . import ledger as _ledger
                 helper.on_cost = lambda s, c: _ledger.record(
-                    "rescue", s, c, "claude: stuck step")
+                    "rescue", s, c, f"{self.settings.get('planning_engine', 'claude')}: stuck step")
                 from . import tasklog as _tasklog
                 helper.on_log = lambda prompt, reply, s, c, shot: \
-                    _tasklog.model(f"claude {helper.model}", "rescue",
+                    _tasklog.model(f"{self.settings.get('planning_engine', 'claude')} {helper.model}", "rescue",
                                    prompt, reply, s, c, shot=shot)
                 from . import claude_api
-                if claude_api.enabled():
+                from . import codex_backend
+                if codex_backend.enabled():
+                    helper.claude = None  # Do not silently switch providers on failure.
+                    helper.model = "codex"
+                if claude_api.enabled() or codex_backend.enabled():
                     helper.caller = self._direct_rescue(helper.model)
             runner = Runner(
                 resolved, Watcher(hwnd=None), GuardedActuator(self.say),
@@ -732,9 +803,20 @@ class ScriptEngine:
             self._set_status_raw(d)
 
     # -- 4. the whole route -----------------------------------------------
-    def handle(self, task: str, forced: tuple | None = None) -> Outcome:
+    def handle(self, task: str, forced: tuple | None = None,
+               repeat: bool = False, interactive: bool = True) -> Outcome:
         """Route a task. `forced` = (script, args[, skip, run_id]): run that
-        script (the Scripts tab's Run, or a Resume), skipping recognition."""
+        script (the Scripts tab's Run, or a Resume), skipping recognition.
+
+        `repeat`: the person ticked "Repeat task". Only then does a task no
+        script fits get one - written now, blind, if author_when is
+        "before"; otherwise (the default) the agent does the task and saves
+        what worked (authoring.LEARN_REQUEST). A one-off task writes nothing:
+        a script nobody runs again is a Claude call for nothing.
+
+        `interactive`: someone pressed Run, so a script short of a required
+        detail may ask for it. A scheduled run has nobody to ask - it goes
+        to Claude at once, not after an hour at the question."""
         lib = bridge.library()
         authored = False
         skip, run_id = [], ""
@@ -757,7 +839,8 @@ class ScriptEngine:
             except Exception as e:
                 name, why = None, f"script library unavailable ({e})"
             self.say("system", why)
-            if not name and self.settings.get("author_scripts", True):
+            if (not name and repeat and self.settings.get("author_scripts", True)
+                    and self.settings.get("author_when", "after") == "before"):
                 self._status("routing", detail="Claude is writing a script "
                                                "for this task")
                 self.say("system", "Asking Claude to write a script for "
@@ -770,15 +853,27 @@ class ScriptEngine:
             if not name:
                 return Outcome("claude", why=why)
             script = lib.local()[name]
-            args = self.fill_params(script, task)
+            args = self.fill_params(script, task, ask_missing=interactive)
             if args is None:
+                import tools_sdk
+                if tools_sdk.should_stop():
+                    # Asked for the detail, and the person pressed Stop.
+                    why = "Required details were not provided; no script actions ran."
+                    self.say("system", why)
+                    self._status("done", detail=why)
+                    return Outcome("stopped", why=why, script=name)
+                # Not asked, or asked and no answer came: Claude does the
+                # task, as it would have without a script.
                 why = (f"{name} needs details the task does not give "
                        f"({', '.join(k for k, v in script.params.items() if v == '')})")
                 self.say("system", why + " — handing to Claude.")
+                self._status("routing", detail=why)
                 if authored:
                     self._unlist(lib, name, "its parameters could not be "
                                             "filled")
-                return Outcome("claude", why=why)
+                # script=name: Jev did recognise one, so a Repeat task must
+                # not have the agent save a second copy of it as <name>-2.
+                return Outcome("claude", why=why, script=name)
         if args:
             self.say("system", f"Parameters: {args}")
 
@@ -795,11 +890,21 @@ class ScriptEngine:
         if rep.ok and not getattr(runner, "hung", False):
             self._finish_checkpoint("done")
             self._status("done", detail=f"{secs:.0f}s")
-            if authored:
+            learned = lib.local().get(name)
+            # Verified = it replayed on its own. A run an Opus rescue had to
+            # finish proves the task can be done, not that the script can.
+            # An observe/assist step's rounds are the script's own work and
+            # do not count (see _rescues).
+            first_ok = (learned is not None and learned.extra.get("learned_at")
+                        and not learned.extra.get("verified")
+                        and not self._rescues)
+            if authored or first_ok:
                 from . import authoring
                 authoring.mark(lib, name, verified=True)
                 self.say("system", f"Saved {name} — next time Jev runs it "
-                                   f"without Claude. See the Scripts tab.")
+                                   f"without Claude. See the Scripts tab."
+                         if authored else
+                         f"{name} worked on its first replay — marked verified.")
             self.say("result", f"Done with script {name} in {secs:.0f}s.\n"
                                f"{rep.summary()}" + _bought_lines(rep))
             return Outcome("done", script=name, report=rep)

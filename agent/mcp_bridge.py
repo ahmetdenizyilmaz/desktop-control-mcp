@@ -55,7 +55,7 @@ _READ_ONLY = {
     "list_windows", "find_controls", "read_labels", "screenshot", "machine_info",
     "web_status", "web_learned", "web_read", "web_page", "web_elements",
     "web_tabs", "list_credentials", "find_job", "recall_lessons", "save_lesson",
-    "wait_for_reply", "sample_colors", "trace_edges",
+    "save_script", "wait_for_reply", "sample_colors", "trace_edges",
 }
 
 _PREAMBLE = """You are driving this Windows PC through the AGI Agent engine.
