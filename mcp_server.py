@@ -1,23 +1,49 @@
 """MCP server — desktop control + 3-mode screenshot system for Windows."""
 
 import json
+import os
+import sys
 import threading
+import time
 from contextlib import asynccontextmanager
+
+# Before anything imports numpy (Pillow does): numpy's bundled OpenBLAS
+# commits a buffer per CPU thread as it loads, ~490 MB on a 16-thread PC.
+# Nothing here does linear algebra in numpy — the models run on torch — so
+# one thread costs no speed and keeps the idle server near 70 MB. scipy,
+# which the models pull in, carries its own OpenBLAS and is held down too.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 from mcp.server.fastmcp import FastMCP, Image as MCPImage
 
 import controller
 
 # ------------------------------------------------------------------
-# Lifespan — start model loading in background so server boots fast
+# AI models — loaded on first use, freed again when idle
 # ------------------------------------------------------------------
+#
+# Loading the OmniParser models at startup put every process at ~1.4 GB,
+# and every Claude Code session starts its own copy of this server, so each
+# open session paid that even where nothing ever detects. Only
+# detect_ui_elements needs them: they load on its first call and are freed
+# after DESKTOP_CONTROL_MODEL_IDLE_S seconds without one (default 600,
+# 0 = keep them). DESKTOP_CONTROL_PRELOAD=1 loads them at startup again,
+# for a fast first detection.
+
+_MODEL_IDLE_S = float(os.environ.get("DESKTOP_CONTROL_MODEL_IDLE_S", "600"))
+_PRELOAD = os.environ.get("DESKTOP_CONTROL_PRELOAD") == "1"
 
 _models_ready = threading.Event()
 _model_load_error: str | None = None
+_loader: threading.Thread | None = None
+# Held while models load or a detection runs, so the idle unload can never
+# pull the models out from under a running detection.
+_use_lock = threading.Lock()
+_last_used = 0.0
 
 def _load_models_background():
     """Load OmniParser v2 models in a background thread."""
-    global _model_load_error
+    global _model_load_error, _last_used
     import ui_parser
     try:
         ui_parser.load_models()
@@ -26,13 +52,42 @@ def _load_models_background():
         # detect_ui_elements reports "still loading" forever.
         _model_load_error = f"{type(e).__name__}: {e}"
         return
+    _last_used = time.monotonic()
     _models_ready.set()
+
+def _start_loading():
+    """Start loading the models unless they are loaded or loading. Hold _use_lock."""
+    global _loader, _model_load_error
+    if _models_ready.is_set() or (_loader is not None and _loader.is_alive()):
+        return
+    _model_load_error = None  # a failed load is retried on the next call
+    _loader = threading.Thread(target=_load_models_background, daemon=True)
+    _loader.start()
+
+def _unload_when_idle():
+    """Free the models once no detection has run for _MODEL_IDLE_S seconds."""
+    import ui_parser
+    while True:
+        time.sleep(min(60.0, max(5.0, _MODEL_IDLE_S / 4)))
+        if not _models_ready.is_set() or time.monotonic() - _last_used < _MODEL_IDLE_S:
+            continue
+        if not _use_lock.acquire(blocking=False):
+            continue  # a detection is running; try again later
+        try:
+            if _models_ready.is_set() and time.monotonic() - _last_used >= _MODEL_IDLE_S:
+                _models_ready.clear()
+                ui_parser.unload_models()
+        finally:
+            _use_lock.release()
 
 @asynccontextmanager
 async def lifespan(app):
-    """Start model loading in background — server is ready immediately."""
-    thread = threading.Thread(target=_load_models_background, daemon=True)
-    thread.start()
+    """Boot without the models; they load when detect_ui_elements first needs them."""
+    if _PRELOAD:
+        with _use_lock:
+            _start_loading()
+    if _MODEL_IDLE_S > 0:
+        threading.Thread(target=_unload_when_idle, daemon=True).start()
     yield {}
 
 
@@ -169,16 +224,23 @@ def detect_ui_elements(confidence_threshold: float = 0.5, full_response: bool = 
         confidence_threshold: Minimum confidence 0.0-1.0 (default 0.5). Raise to reduce noise, lower to find more elements.
         full_response: If True, include full JSON with bboxes. Default False returns compact table only.
     """
-    if not _models_ready.is_set():
-        _models_ready.wait(timeout=60)
-        if _model_load_error:
-            return f"Error: AI model loading FAILED — {_model_load_error}"
+    global _last_used
+    with _use_lock:
         if not _models_ready.is_set():
-            return "Error: AI models still loading. Try again in a moment."
-
-    annotated_path, json_path, elements = controller.detect_ui_elements(
-        confidence_threshold=confidence_threshold
-    )
+            _start_loading()
+            # Wait for the loader to finish, not for success: a failed load
+            # then reports at once instead of after the whole timeout.
+            _loader.join(timeout=60)
+            if _model_load_error:
+                return f"Error: AI model loading FAILED — {_model_load_error}"
+            if not _models_ready.is_set():
+                return "Error: AI models still loading. Try again in a moment."
+        try:
+            annotated_path, json_path, elements = controller.detect_ui_elements(
+                confidence_threshold=confidence_threshold
+            )
+        finally:
+            _last_used = time.monotonic()
 
     if full_response:
         return [
@@ -376,5 +438,29 @@ def get_active_window() -> str:
 # Entry point
 # ------------------------------------------------------------------
 
+def _private_stdin_pipe():
+    """Read MCP messages from a private copy of stdin; point stdin at NUL.
+
+    On Windows a synchronous read on a pipe blocks every other call on that
+    pipe until it returns — including the GetFileType check a DLL's C
+    runtime makes on the standard handles as it loads. The stdio transport
+    always has a thread waiting on stdin, so loading the models (torch,
+    scipy and friends) crept forward one DLL per incoming message:
+    `import scipy.linalg` went from 0.4 s to never finishing. Nothing else
+    here reads stdin, so the standard handle can be NUL.
+    """
+    import ctypes
+    import msvcrt
+
+    sys.stdin = open(os.dup(0), "r", encoding="utf-8")
+    nul = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(nul, 0)
+    os.close(nul)
+    STD_INPUT_HANDLE = -10
+    ctypes.windll.kernel32.SetStdHandle(STD_INPUT_HANDLE, msvcrt.get_osfhandle(0))
+
+
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        _private_stdin_pipe()
     mcp.run(transport="stdio")

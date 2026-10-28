@@ -52,7 +52,12 @@ Add an entry like this to your MCP client config (e.g. Claude Desktop / Claude C
 }
 ```
 
-The server boots immediately; models load in a background thread so the first `detect_ui_elements` call waits for them but the rest of the tools are available right away.
+The server boots immediately and idles at about 70 MB. Only `detect_ui_elements` needs the AI models, so they load on its first call (that call waits for them) and are freed again after 10 minutes without a detection. Every Claude Code session starts its own copy of the server, so sessions that never detect no longer carry ~1.4 GB of models each.
+
+| Environment variable | Default | Effect |
+|---|---|---|
+| `DESKTOP_CONTROL_MODEL_IDLE_S` | `600` | Seconds without a detection before the models are freed. `0` keeps them loaded. |
+| `DESKTOP_CONTROL_PRELOAD` | unset | `1` loads the models at startup, for a fast first detection. |
 
 ### As an HTTP server with tray icon
 
@@ -167,4 +172,5 @@ run_agents.bat         Convenience launcher for Claude Code in this folder
 
 - **Windows only.** The cursor compositing, DPI awareness, and active-window code use Win32 APIs directly.
 - **Primary monitor only.** All coordinates are in the primary monitor's pixel space.
-- **First detection is slow.** OmniParser model load + EasyOCR initialization can take 30–60 seconds on first call. Subsequent detections are fast (sub-second on GPU, a few seconds on CPU).
+- **First detection is slow.** OmniParser model load + EasyOCR initialization can take 30–60 seconds on first call, and again on the first call after the models were freed for being idle. Subsequent detections are fast (sub-second on GPU, a few seconds on CPU).
+- **Freed models leave the runtime behind.** Unloading drops the model weights, but torch and the CUDA runtime stay in the process (~1.8 GB in RAM with CUDA) until the session ends.

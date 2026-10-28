@@ -61,10 +61,21 @@ _model_dir = None
 
 def load_models() -> None:
     """Download and load all 3 models. Idempotent — safe to call multiple times."""
-    global _model_dir
-
-    if _models["yolo"] is not None:
+    if all(m is not None for m in _models.values()):
         return  # Already loaded
+    try:
+        _load()
+    except BaseException:
+        # A half-loaded parser is worse than none: it holds the models that
+        # did load, and a check on one model would call it loaded next time
+        # and then fail inside parse_ui. Drop what loaded so a retry starts
+        # clean.
+        unload_models()
+        raise
+
+
+def _load() -> None:
+    global _model_dir
 
     from huggingface_hub import snapshot_download
 
@@ -95,8 +106,11 @@ def load_models() -> None:
     # a DirectML-capable GPU that is sitting right there. The resolver knows
     # the difference, and says so in the log — a timing with no device named
     # beside it is not reproducible.
+    #
+    # The log goes to stderr: under the MCP server stdout is the JSON-RPC
+    # channel, and a stray line there is an invalid message to the client.
     dev = _device()
-    print(f"[ui_parser] {dev.describe()}", flush=True)
+    print(f"[ui_parser] {dev.describe()}", file=sys.stderr, flush=True)
     target = dev.torch_device()
     if target is not None:
         try:
@@ -105,11 +119,29 @@ def load_models() -> None:
             # A GPU that accepts the call and then fails on a kernel is worse
             # than one that never started. Fall back loudly and carry on.
             print(f"[ui_parser] could not move Florence-2 to {target}: {e}; "
-                  f"staying on CPU", flush=True)
+                  f"staying on CPU", file=sys.stderr, flush=True)
 
     # 3) EasyOCR reader
     import easyocr
     _models["easyocr"] = easyocr.Reader(["en"], gpu=dev.is_accelerated())
+
+
+def unload_models() -> None:
+    """Drop all 3 models and give their memory back. load_models() reloads them.
+
+    Measured on an RTX 4050 with torch 2.6 + CUDA 12.4: a detection leaves
+    the process at ~5.0 GB committed, and unloading brings it back to ~2.6 GB.
+    What stays is torch and the CUDA runtime (~1.8 GB in RAM): a module
+    cannot be unloaded, and keeping it makes the next load faster.
+    """
+    import gc
+
+    for key in _models:
+        _models[key] = None
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _caption_icon(cropped: Image.Image) -> str:
